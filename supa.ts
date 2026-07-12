@@ -148,9 +148,13 @@ export function parseLabel(text: string): string | null {
   }
   return null;
 }
+// Escape a string for safe interpolation into a RegExp.
+export function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
 // Pure: read the host `port` under `[section]` from config.toml text. Tests.
 export function parsePort(text: string, section: string): string | null {
-  const secRe = new RegExp(`^\\s*\\[${section}\\]`);
+  const secRe = new RegExp(`^\\s*\\[${escapeRegExp(section)}\\]`);
   let inSection = false;
   for (const line of text.split(/\r?\n/)) {
     if (/^\s*\[/.test(line)) inSection = secRe.test(line);
@@ -635,7 +639,8 @@ async function cmdLogs(rest: string[]): Promise<void> {
   ]);
   const containers = out.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
   if (containers.length === 0) die(`no running containers for '${p}' — is it up? 'supa up ${p}'`);
-  const svcOf = (c: string) => c.replace(/^supabase_/, "").replace(new RegExp(`_${lbl}$`), "");
+  const svcOf = (c: string) =>
+    c.replace(/^supabase_/, "").replace(new RegExp(`_${escapeRegExp(lbl)}$`), "");
   if (!svc) {
     console.log(`services for '${p}':`);
     for (const c of containers.sort()) console.log(`  ${svcOf(c)}`);
@@ -877,7 +882,7 @@ async function cmdStats(): Promise<void> {
   let grand = 0;
   for (const [name, cpu, mem] of rows) {
     const label = name.split("_").pop() ?? "";
-    const svc = name.replace(/^supabase_/, "").replace(new RegExp(`_${label}$`), "");
+    const svc = name.replace(/^supabase_/, "").replace(new RegExp(`_${escapeRegExp(label)}$`), "");
     line([label, svc, cpu, mem]);
     const used = memToMiB((mem ?? "").split("/")[0]);
     perProject[label] = (perProject[label] ?? 0) + used;

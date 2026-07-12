@@ -3,6 +3,7 @@
 import {
   applyEnvMap,
   ensureSigningKeysPath,
+  escapeRegExp,
   expandTilde,
   fmtMiB,
   join,
@@ -77,6 +78,14 @@ Deno.test("parsePort respects section boundaries", () => {
   eq(parsePort(CFG, "db"), "54322"); // not shadow_port, not [db.pooler]
   eq(parsePort(CFG, "studio"), "54323");
   eq(parsePort(CFG, "realtime"), null);
+});
+Deno.test("parsePort treats the section name literally (no regex injection)", () => {
+  // '.' in the section must not act as a regex wildcard
+  eq(parsePort("[apiXtls]\nport = 999\n[api]\nport = 111\n", "api"), "111");
+});
+Deno.test("escapeRegExp escapes regex metacharacters", () => {
+  eq(escapeRegExp("a.b+c"), "a\\.b\\+c");
+  eq(escapeRegExp("plain"), "plain");
 });
 
 // ---------- port re-banding ---------------------------------------------------
@@ -154,6 +163,11 @@ Deno.test("mergeDotenv seeds a file from empty and ends with a newline", () => {
   const { text } = mergeDotenv("", "A=1\nB=2\n");
   ok(text.endsWith("\n"));
   ok(text.includes("A=1") && text.includes("B=2"));
+});
+Deno.test("mergeDotenv preserves values containing '='", () => {
+  const { text, map } = mergeDotenv("", "DB_URL=postgres://u:p@h/db?a=b&c=d\n");
+  eq(map.DB_URL, "postgres://u:p@h/db?a=b&c=d");
+  ok(text.includes("DB_URL=postgres://u:p@h/db?a=b&c=d"));
 });
 
 // ---------- signing key path --------------------------------------------------
