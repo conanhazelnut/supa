@@ -13,17 +13,21 @@ file is for.
 - **`SLOT`** (4th digit) = the project. One free digit per project → up to 10 stacks.
 - **`SERVICE`** (5th digit) = fixed by Supabase convention:
 
-| SERVICE digit | Service            |
-| ------------- | ------------------ |
-| `1`           | API gateway (Kong) |
-| `2`           | Postgres (direct)  |
-| `3`           | Studio             |
-| `4`           | Inbucket / Mailpit |
-| `7`           | Analytics          |
-| `0`           | DB shadow          |
-| `9`           | Pooler             |
+| SERVICE digit | Service                |
+| ------------- | ---------------------- |
+| `1`           | API gateway (Kong)     |
+| `2`           | Postgres (direct)      |
+| `3`           | Studio                 |
+| `4`           | Inbucket / Mailpit     |
+| `7`           | Analytics              |
+| `0`           | DB shadow              |
+| `8`           | Edge runtime inspector |
+| `9`           | Pooler                 |
 
 So Postgres for slot `2` = `543` + `2` + `2` = **54322**.
+
+> The edge runtime `inspector_port` defaults to `8083` (off-scheme). `supa ports`
+> pulls it into `543<slot>8` so it can't collide across projects.
 
 `supa ls` is the live source of truth for who owns which ports and what's UP.
 `supa ports <name> [slot]` re-bands a project's `543XX` ports to a free slot, and

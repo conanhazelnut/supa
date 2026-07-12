@@ -1,0 +1,47 @@
+# Contributing to supa
+
+Thanks for your interest! supa is a small, focused tool — contributions that keep
+it that way are very welcome.
+
+## Design principles (please keep these)
+
+- **One file, one binary.** All logic lives in `supa.ts`, compiled with
+  `deno compile`. No runtime dependencies for the user beyond Docker and the
+  Supabase CLI — supa is a thin coordinator, not a container runtime.
+- **Cross-platform.** It must work on macOS, Linux, and Windows. Use forward
+  slashes, avoid shelling through a shell (always `new Deno.Command(cmd, {args})`,
+  never `sh -c`), and don't assume a Unix-only path layout.
+- **Derive, don't store.** Docker labels and ports come from each project's
+  `supabase/config.toml` at call time. supa's own state is just the registry
+  (`name|path`) and a tiny config (`max_active`, `ram_budget_gb`).
+- **Pure logic is tested.** Parsing/formatting functions are exported and covered
+  in `supa_test.ts`. Add a test with any logic change.
+
+## Dev setup
+
+You need [Deno](https://deno.com). Then:
+
+```sh
+deno task ok            # fmt --check + lint + type-check + test (run before pushing)
+deno task test          # tests only
+deno task dev ls        # run supa without compiling
+deno task build         # compile local binaries into dist/
+```
+
+CI runs the same `deno fmt --check`, `deno lint`, `deno check`, `deno test`, and
+`shellcheck` on every push and PR — keep them green.
+
+## Pull requests
+
+1. Keep changes small and focused; one concern per PR.
+2. Run `deno task ok` locally first.
+3. Add/update tests for any behaviour change.
+4. Update the docs that describe the behaviour (`README.md`, `SUPA.md`,
+   `PORTS.md`, and the `cmdHelp` text in `supa.ts`) so they stay in sync.
+5. Update `CHANGELOG.md` under an `## [Unreleased]` heading.
+
+## Releases (maintainers)
+
+Tag `vX.Y.Z`; CI (`.github/workflows/release.yml`) cross-compiles every platform,
+writes `SHA256SUMS.txt`, and attaches them to the GitHub Release. To cut one by
+hand: `./build.sh release` then `gh release create vX.Y.Z dist/supa-* dist/SHA256SUMS.txt`.

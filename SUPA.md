@@ -248,8 +248,11 @@ one shouldn't hog RAM. Trimmed stacks (see `PORTS.md` service profiles) are
 - **`restart=no` resets after start** — the CLI recreates containers with its
   default restart policy on each `start`; `supa` re-pins `restart=no` after
   `up`/`switch`.
-- **Use the *legacy* anon/service_role JWTs** from `supabase status -o env`, not
-  `sb_publishable_` / `sb_secret_` (Realtime decodes the key as a JWT).
+- **JWT vs publishable keys** — some clients (e.g. certain Realtime setups)
+  expect the legacy `ANON_KEY` / `SERVICE_ROLE_KEY` JWTs from
+  `supabase status -o env` rather than the newer `sb_publishable_` / `sb_secret_`
+  keys. If auth/realtime rejects a key, try the JWT form (`supa env --write`
+  writes the `-o env` values).
 - **Clock drift after sleep** → flaky time-window tests; fix with a stop/start.
 - **Unsigned binary on first run** — the release binaries aren't code-signed. The
   `curl | sh` install avoids macOS Gatekeeper, but a *browser*-downloaded binary
