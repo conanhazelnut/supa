@@ -19,3 +19,6 @@ Initial release.
 - **Manage**: `add` (+ `--init`), `rm`, `ports` (re-band), `config`.
 - Configurable `max-active` concurrency and `ram-budget`.
 - Cross-platform: one `supa.ts` compiled to native binaries (`supa`, `supa.exe`).
+- **Install**: one-line install scripts (`install.sh` / `install.ps1`) that fetch
+  prebuilt binaries; CI (`.github/workflows/release.yml`) builds every platform
+  on a version tag and attaches them to the GitHub Release.

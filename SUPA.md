@@ -162,7 +162,20 @@ admin|~/code/admin
 
 ---
 
-## Building & installing
+## Installing
+
+Most users don't build anything — the install scripts download a prebuilt binary
+(see the [README](./README.md)):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/conanhazelnut/supa/main/install.sh | sh   # macOS/Linux
+irm https://raw.githubusercontent.com/conanhazelnut/supa/main/install.ps1 | iex        # Windows
+```
+
+Those binaries come from CI (`.github/workflows/release.yml`) on each version
+tag, attached to the GitHub Release.
+
+## Building from source
 
 Needs **Deno** on the build machine only (`deno compile` bundles the runtime, so
 the *running* machine needs nothing). Install it from https://deno.com.
@@ -171,6 +184,7 @@ the *running* machine needs nothing). Install it from https://deno.com.
 ./build.sh            # → dist/supa (this host) + dist/supa.exe (Windows x64)
 ./build.sh host       # only this host
 ./build.sh windows    # only the Windows .exe
+./build.sh release    # ALL platforms as dist/supa-<target>[.exe] (what CI runs)
 ```
 
 ### macOS / Linux

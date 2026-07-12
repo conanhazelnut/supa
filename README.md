@@ -21,26 +21,39 @@ everything it can from each project's `config.toml` so nothing drifts.
 
 ## Install
 
-Needs [Deno](https://deno.com) to build (the built binary needs nothing).
+Downloads the prebuilt binary for your platform — no compiler, no Deno.
 
+**macOS / Linux**
 ```sh
-git clone https://github.com/conanhazelnut/supa.git
-cd supa
-./build.sh                                    # → dist/supa (host) + dist/supa.exe
-ln -sf "$PWD/dist/supa" ~/.local/bin/supa     # put it on PATH (macOS/Linux)
+curl -fsSL https://raw.githubusercontent.com/conanhazelnut/supa/main/install.sh | sh
 ```
 
-Then create your registry:
+**Windows (PowerShell)**
+```powershell
+irm https://raw.githubusercontent.com/conanhazelnut/supa/main/install.ps1 | iex
+```
+
+The installer also seeds a starter registry. Point it at your projects, then go:
 
 ```sh
-mkdir -p ~/.config/supa
-cp supa.registry.example ~/.config/supa/supa.registry
-$EDITOR ~/.config/supa/supa.registry          # name|path per project
+$EDITOR ~/.config/supa/supa.registry     # name|path per project (%APPDATA%\supa on Windows)
 supa ls
 ```
 
-On Windows: copy `dist/supa.exe` onto your `PATH`, put `supa.registry` in
-`%APPDATA%\supa\` (or set `SUPA_HOME`), then `supa ls`. See [SUPA.md](./SUPA.md).
+### Build from source
+
+For contributors, or platforms without a prebuilt binary. Needs
+[Deno](https://deno.com); the built binary needs nothing.
+
+```sh
+git clone https://github.com/conanhazelnut/supa.git && cd supa
+./build.sh                                 # → dist/supa (+ dist/supa.exe)
+ln -sf "$PWD/dist/supa" ~/.local/bin/supa  # put it on PATH (macOS/Linux)
+```
+
+Releases are built by CI on a version tag (`.github/workflows/release.yml`) and
+attached to the [GitHub Release](https://github.com/conanhazelnut/supa/releases);
+that's what the install scripts download.
 
 ## Quick start
 
