@@ -1,12 +1,14 @@
 name: release
 
-# Tag a version (e.g. `git tag v0.1.0 && git push --tags`) and this builds every
-# platform binary and attaches them to the GitHub Release. The install scripts
-# download those artifacts, so users never compile.
+# Tag a version (e.g. `git tag v0.1.0 && git push --tags`) — or run this manually
+# via workflow_dispatch — to build every platform binary, write SHA256SUMS.txt,
+# and attach them to the GitHub Release. The install scripts download and verify
+# those artifacts, so users never compile.
 
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -21,17 +23,21 @@ jobs:
         with:
           deno-version: v2.x
 
-      - name: Check
+      - name: Verify
         run: |
-          deno check supa.ts
-          deno lint supa.ts
-          deno fmt --check supa.ts
+          deno fmt --check supa.ts supa_test.ts
+          deno lint supa.ts supa_test.ts
+          deno check supa.ts supa_test.ts
+          deno test --allow-read --allow-env
 
-      - name: Build all targets
+      - name: Build all targets + checksums
         run: ./build.sh release   # deno cross-compiles every target from Linux
 
       - name: Publish release with binaries
+        if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/supa-*
+          files: |
+            dist/supa-*
+            dist/SHA256SUMS.txt
           generate_release_notes: true

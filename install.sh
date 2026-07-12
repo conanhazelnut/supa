@@ -31,10 +31,12 @@ case "$os-$arch" in
 esac
 
 if [ "$VERSION" = "latest" ]; then
-  url="https://github.com/$REPO/releases/latest/download/supa-$target"
+  base="https://github.com/$REPO/releases/latest/download"
 else
-  url="https://github.com/$REPO/releases/download/$VERSION/supa-$target"
+  base="https://github.com/$REPO/releases/download/$VERSION"
 fi
+url="$base/supa-$target"
+sums_url="$base/SHA256SUMS.txt"
 
 echo "supa: installing $target ($VERSION) -> $BIN_DIR/supa"
 mkdir -p "$BIN_DIR"
@@ -44,6 +46,26 @@ if ! curl -fSL --proto '=https' --tlsv1.2 "$url" -o "$tmp"; then
   echo "     Is a release published yet? See https://github.com/$REPO/releases" >&2
   rm -f "$tmp"; exit 1
 fi
+
+# Verify the download against SHA256SUMS.txt. Fail closed on mismatch; only skip
+# if the release publishes no checksum file at all.
+sums="$(curl -fsSL --proto '=https' --tlsv1.2 "$sums_url" 2>/dev/null || true)"
+expected="$(printf '%s\n' "$sums" | awk -v f="supa-$target" '$2 == f {print $1}')"
+if [ -n "$expected" ]; then
+  if command -v sha256sum >/dev/null 2>&1; then
+    actual="$(sha256sum "$tmp" | awk '{print $1}')"
+  else
+    actual="$(shasum -a 256 "$tmp" | awk '{print $1}')"
+  fi
+  if [ "$actual" != "$expected" ]; then
+    echo "supa: checksum mismatch for supa-$target — aborting" >&2
+    rm -f "$tmp"; exit 1
+  fi
+  echo "supa: checksum verified"
+else
+  echo "supa: warning — no checksum published for this release; skipping verification" >&2
+fi
+
 chmod +x "$tmp"
 mv "$tmp" "$BIN_DIR/supa"
 

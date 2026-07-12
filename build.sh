@@ -43,6 +43,15 @@ build_release() {
     echo "▶ $t → $out"
     deno compile "${PERMS[@]}" --target "$t" --output "$out" supa.ts
   done
+  echo "▶ checksums → dist/SHA256SUMS.txt"
+  (
+    cd dist
+    if command -v sha256sum >/dev/null 2>&1; then
+      sha256sum supa-* >SHA256SUMS.txt
+    else
+      shasum -a 256 supa-* >SHA256SUMS.txt
+    fi
+  )
 }
 
 case "$want" in
@@ -54,4 +63,4 @@ case "$want" in
 esac
 
 echo "✓ done:"
-ls -lh dist/ | grep -E 'supa' || true
+ls -lh dist/ 2>/dev/null || true

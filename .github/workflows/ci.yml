@@ -1,0 +1,28 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+      - name: Format
+        run: deno fmt --check supa.ts supa_test.ts
+      - name: Lint
+        run: deno lint supa.ts supa_test.ts
+      - name: Type-check
+        run: deno check supa.ts supa_test.ts
+      - name: Test
+        run: deno test --allow-read --allow-env
+      - name: Shell scripts (shellcheck)
+        run: shellcheck build.sh install.sh
