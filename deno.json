@@ -3,9 +3,11 @@
   "license": "Apache-2.0",
   "tasks": {
     "dev": "deno run --allow-read --allow-write --allow-env --allow-run supa.ts",
-    "check": "deno check supa.ts",
-    "lint": "deno lint supa.ts",
-    "fmt": "deno fmt supa.ts",
+    "check": "deno check supa.ts supa_test.ts",
+    "lint": "deno lint supa.ts supa_test.ts",
+    "fmt": "deno fmt supa.ts supa_test.ts",
+    "test": "deno test --allow-read --allow-env",
+    "ok": "deno fmt --check supa.ts supa_test.ts && deno lint supa.ts supa_test.ts && deno check supa.ts supa_test.ts && deno test --allow-read --allow-env",
     "build": "./build.sh",
     "build:win": "./build.sh windows"
   },
