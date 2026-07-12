@@ -10,7 +10,8 @@ file is for.
 
 ## Scheme — `543<SLOT><SERVICE>`
 
-- **`SLOT`** (4th digit) = the project. One free digit per project → up to 10 stacks.
+- **`SLOT`** (4th digit) = the project. `supa` auto-assigns a free digit `1`–`9`
+  (slot `0` also works if you set it by hand).
 - **`SERVICE`** (5th digit) = fixed by Supabase convention:
 
 | SERVICE digit | Service                |

@@ -1,7 +1,23 @@
 # Changelog
 
-All notable changes to supa are documented here.
-This project adheres to [Semantic Versioning](https://semver.org/).
+All notable changes to supa are documented here. This project adheres to
+[Semantic Versioning](https://semver.org/) and
+[Keep a Changelog](https://keepachangelog.com/).
+
+## [Unreleased]
+
+### Added
+
+- Unit test suite (`supa_test.ts`) for the parsing/formatting core.
+- CI (`ci.yml`): fmt, lint, type-check, test, and shellcheck on every push/PR.
+- Release integrity: `SHA256SUMS.txt` published with each release and verified by
+  the install script; build provenance attestation.
+- `CONTRIBUTING.md`, `SECURITY.md`, `CODE_OF_CONDUCT.md`, issue/PR templates.
+
+### Fixed
+
+- `supa ports` / `add --init` now re-band the edge runtime `inspector_port`
+  (default `8083`) into `543<slot>8`, preventing a cross-project collision.
 
 ## [0.1.0] — 2026-07-13
 

@@ -1,5 +1,9 @@
 # supa
 
+[![ci](https://github.com/conanhazelnut/supa/actions/workflows/ci.yml/badge.svg)](https://github.com/conanhazelnut/supa/actions/workflows/ci.yml)
+[![release](https://img.shields.io/github/v/release/conanhazelnut/supa?sort=semver)](https://github.com/conanhazelnut/supa/releases)
+[![license](https://img.shields.io/badge/license-Apache--2.0-blue)](./LICENSE)
+
 A thin, cross-platform CLI for running **multiple local Supabase stacks — one per
 project — on a single machine**, on top of the official
 [Supabase CLI](https://supabase.com/docs/guides/local-development). No hand-rolled
