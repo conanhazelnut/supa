@@ -251,6 +251,10 @@ one shouldn't hog RAM. Trimmed stacks (see `PORTS.md` service profiles) are
 - **Use the *legacy* anon/service_role JWTs** from `supabase status -o env`, not
   `sb_publishable_` / `sb_secret_` (Realtime decodes the key as a JWT).
 - **Clock drift after sleep** → flaky time-window tests; fix with a stop/start.
+- **Unsigned binary on first run** — the release binaries aren't code-signed. The
+  `curl | sh` install avoids macOS Gatekeeper, but a *browser*-downloaded binary
+  needs `xattr -d com.apple.quarantine <path>` (macOS); on Windows, SmartScreen
+  may warn — choose *More info → Run anyway*.
 
 ---
 
