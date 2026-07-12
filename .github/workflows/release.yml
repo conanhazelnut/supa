@@ -1,0 +1,37 @@
+name: release
+
+# Tag a version (e.g. `git tag v0.1.0 && git push --tags`) and this builds every
+# platform binary and attaches them to the GitHub Release. The install scripts
+# download those artifacts, so users never compile.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      - name: Check
+        run: |
+          deno check supa.ts
+          deno lint supa.ts
+          deno fmt --check supa.ts
+
+      - name: Build all targets
+        run: ./build.sh release   # deno cross-compiles every target from Linux
+
+      - name: Publish release with binaries
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/supa-*
+          generate_release_notes: true
