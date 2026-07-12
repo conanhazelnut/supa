@@ -11,18 +11,25 @@ async function runSupa(
   args: string[],
   home: string,
 ): Promise<{ code: number; out: string; err: string }> {
+  // clearEnv so NO inherited SUPA_* (max-active, allow-multi, ram-budget, …) from
+  // the developer's shell can leak in; keep only PATH (for the child's own
+  // docker/supabase lookups) and the pinned config vars.
+  const env: Record<string, string> = {
+    PATH: Deno.env.get("PATH") ?? "",
+    SUPA_HOME: home,
+    SUPA_REGISTRY: `${home}/supa.registry`,
+    SUPA_CONFIG: `${home}/supa.config`,
+  };
+  if (Deno.build.os === "windows") {
+    for (const k of ["SystemRoot", "USERPROFILE", "TEMP"]) {
+      const v = Deno.env.get(k);
+      if (v) env[k] = v;
+    }
+  }
   const { code, stdout, stderr } = await new Deno.Command(Deno.execPath(), {
     args: ["run", "--no-check", "-A", "supa.ts", ...args],
-    // clearEnv so NO inherited SUPA_* (max-active, allow-multi, ram-budget, …)
-    // from the developer's shell can leak in; keep only PATH (for the child's
-    // own docker/supabase lookups) and the pinned config vars.
     clearEnv: true,
-    env: {
-      PATH: Deno.env.get("PATH") ?? "",
-      SUPA_HOME: home,
-      SUPA_REGISTRY: `${home}/supa.registry`,
-      SUPA_CONFIG: `${home}/supa.config`,
-    },
+    env,
     stdout: "piped",
     stderr: "piped",
   }).output();

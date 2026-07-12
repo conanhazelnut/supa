@@ -418,6 +418,7 @@ async function cmdEnv(rest: string[]): Promise<void> {
     return;
   }
   const { code, out } = await runCapture(supabaseCmd(), ["--workdir", wd, "status", "-o", "env"]);
+  if (code === 127) die(SUPABASE_MISSING);
   if (code !== 0 || out.trim() === "") {
     die(`could not read env for '${p}' — is it up? try 'supa up ${p}'`);
   }

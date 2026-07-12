@@ -4,30 +4,6 @@ All notable changes to supa are documented here. This project adheres to
 [Semantic Versioning](https://semver.org/) and
 [Keep a Changelog](https://keepachangelog.com/).
 
-## [Unreleased]
-
-### Added
-
-- Unit test suite (`supa_test.ts`) for the parsing/formatting core.
-- CI (`ci.yml`): fmt, lint, type-check, test, and shellcheck on every push/PR.
-- Release integrity: `SHA256SUMS.txt` published with each release and verified by
-  the install script; build provenance attestation.
-- `CONTRIBUTING.md`, `SECURITY.md`, `CODE_OF_CONDUCT.md`, issue/PR templates.
-
-### Fixed
-
-- **`supa rotate`**: write the signing key as a JWK **array** (Supabase rejects a
-  bare object) and place it beside `config.toml`, where `signing_keys_path`
-  resolves — previously rotate could produce a stack that wouldn't start.
-- `supa ports` / `add --init` now re-band the edge runtime `inspector_port`
-  (default `8083`) into `543<slot>8`, preventing a cross-project collision.
-- `supa restart` no longer trips the max-active limit when restarting a running
-  stack.
-- `supa stats` reads each container's real project label (handles `project_id`
-  values containing underscores).
-- Install scripts **fail closed** when a download can't be checksum-verified
-  (override with `SUPA_SKIP_CHECKSUM=1`); `install.ps1` forces TLS 1.2.
-
 ## [0.1.0] — 2026-07-13
 
 Initial release.
@@ -38,12 +14,17 @@ Initial release.
 - Registry (`name → repo root`); Docker label + live ports derived from each
   project's `supabase/config.toml`.
 - **Lifecycle**: `up`, `down [--all]`, `restart`, `switch`, `destroy`
-  (typed-name confirm), `rotate` (new JWT signing key).
+  (typed-name confirm), `rotate` (new JWT signing key, written as a JWK array).
 - **Inspect**: `ls`, `status`, `stats` (CPU/RAM + budget), `logs`, `doctor`,
-  `env` (+ `--write` into a dotenv, optional `supa.env.map` rename).
-- **Manage**: `add` (+ `--init`), `rm`, `ports` (re-band), `config`.
+  `env` (+ `--write` into a dotenv, optional `supa.env.map` rename), `version`.
+- **Manage**: `add` (+ `--init` / `--slot`), `rm`, `ports` (re-band, incl. the
+  edge `inspector_port`), `config`.
 - Configurable `max-active` concurrency and `ram-budget`.
 - Cross-platform: one `supa.ts` compiled to native binaries (`supa`, `supa.exe`).
 - **Install**: one-line install scripts (`install.sh` / `install.ps1`) that fetch
-  prebuilt binaries; CI (`.github/workflows/release.yml`) builds every platform
-  on a version tag and attaches them to the GitHub Release.
+  and **checksum-verify** prebuilt binaries (fail-closed); CI builds every
+  platform on a version tag, publishes `SHA256SUMS.txt`, and attaches a
+  build-provenance attestation.
+- Unit + CLI integration test suite; CI runs fmt, lint, type-check, test, and
+  shellcheck on every push/PR.
+- `CONTRIBUTING.md`, `SECURITY.md`, `CODE_OF_CONDUCT.md`, issue/PR templates.
