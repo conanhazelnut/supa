@@ -261,6 +261,8 @@ function which(cmd: string): string | null {
   }
   return null;
 }
+const SUPABASE_MISSING =
+  "Supabase CLI not found on PATH — install it: https://supabase.com/docs/guides/local-development";
 function supabaseCmd(): string {
   const onPath = which("supabase");
   if (onPath) return onPath;
@@ -330,6 +332,7 @@ async function startStack(name: string): Promise<void> {
   if (!wd) die(`no supabase/config.toml under '${rootOf(name)}' for '${name}'`);
   console.log(`>> starting ${name}  (${wd})`);
   const code = await runInherit(supabaseCmd(), ["--workdir", wd, "start"]);
+  if (code === 127) die(SUPABASE_MISSING);
   if (code !== 0) die(`supabase start failed for '${name}' (exit ${code})`);
   const lbl = labelOf(name);
   if (lbl) await pinNoRestart(lbl);
@@ -339,6 +342,7 @@ async function stopStack(name: string): Promise<void> {
   if (!wd) die(`unresolvable project '${name}'`);
   console.log(`== stopping ${name}`);
   const code = await runInherit(supabaseCmd(), ["--workdir", wd, "stop"]);
+  if (code === 127) die(SUPABASE_MISSING);
   if (code !== 0) die(`supabase stop failed for '${name}' (exit ${code})`);
 }
 
@@ -412,22 +416,12 @@ async function cmdEnv(rest: string[]): Promise<void> {
   const envMap = readEnvMap(wd);
   let incoming = out;
   if (envMap.length) {
-    const native: Record<string, string> = {};
-    for (const line of out.split(/\r?\n/)) {
-      const m = line.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/);
-      if (m) native[m[1]] = m[2];
-    }
-    const lines: string[] = [];
-    const missing = new Set<string>();
-    for (const { app, native: nat } of envMap) {
-      if (nat in native) lines.push(`${app}=${native[nat]}`);
-      else missing.add(nat);
-    }
-    incoming = lines.join("\n");
-    if (missing.size) {
+    const applied = applyEnvMap(out, envMap);
+    incoming = applied.incoming;
+    if (applied.missing.length) {
       console.error(
         `  warning: supa.env.map references keys not in supabase output: ${
-          [...missing].join(", ")
+          applied.missing.join(", ")
         }`,
       );
     }
@@ -569,6 +563,25 @@ export function parseEnvMap(text: string): Array<{ app: string; native: string }
     if (m) out.push({ app: m[1], native: m[2] });
   }
   return out;
+}
+// Pure: rename `supabase status -o env` output via a map, one native -> many
+// app names. Returns the mapped KEY=VALUE lines + any natives not in the output.
+export function applyEnvMap(
+  nativeEnvText: string,
+  envMap: Array<{ app: string; native: string }>,
+): { incoming: string; missing: string[] } {
+  const native: Record<string, string> = {};
+  for (const line of nativeEnvText.split(/\r?\n/)) {
+    const m = line.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/);
+    if (m) native[m[1]] = m[2];
+  }
+  const lines: string[] = [];
+  const missing = new Set<string>();
+  for (const { app, native: nat } of envMap) {
+    if (nat in native) lines.push(`${app}=${native[nat]}`);
+    else missing.add(nat);
+  }
+  return { incoming: lines.join("\n"), missing: [...missing] };
 }
 function readEnvMap(cfgDirPath: string): Array<{ app: string; native: string }> {
   const mapPath = join(cfgDirPath, "supa.env.map");

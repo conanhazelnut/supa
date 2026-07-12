@@ -1,6 +1,7 @@
 // Tests for supa's pure parsing/formatting logic. Zero dependencies — a tiny
 // inline assert keeps the whole project dependency-free.  Run: deno test
 import {
+  applyEnvMap,
   ensureSigningKeysPath,
   expandTilde,
   fmtMiB,
@@ -132,6 +133,27 @@ Deno.test("parseEnvMap supports comments and one-to-many", () => {
     { app: "DATABASE_URL", native: "DB_URL" },
     { app: "DIRECT_URL", native: "DB_URL" },
   ]);
+});
+Deno.test("applyEnvMap renames, supports one-to-many, reports missing", () => {
+  const native = `API_URL="http://127.0.0.1:54321"\nDB_URL="postgres://x"\n`;
+  const map = [
+    { app: "SUPABASE_URL", native: "API_URL" },
+    { app: "DATABASE_URL", native: "DB_URL" },
+    { app: "DIRECT_URL", native: "DB_URL" }, // one native -> two app names
+    { app: "NOPE", native: "MISSING" },
+  ];
+  const { incoming, missing } = applyEnvMap(native, map);
+  eq(incoming.split("\n"), [
+    `SUPABASE_URL="http://127.0.0.1:54321"`,
+    `DATABASE_URL="postgres://x"`,
+    `DIRECT_URL="postgres://x"`,
+  ]);
+  eq(missing, ["MISSING"]);
+});
+Deno.test("mergeDotenv seeds a file from empty and ends with a newline", () => {
+  const { text } = mergeDotenv("", "A=1\nB=2\n");
+  ok(text.endsWith("\n"));
+  ok(text.includes("A=1") && text.includes("B=2"));
 });
 
 // ---------- signing key path --------------------------------------------------
