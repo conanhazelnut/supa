@@ -17,6 +17,7 @@
  */
 
 const OS = Deno.build.os; // "darwin" | "linux" | "windows"
+const VERSION = "0.1.0"; // keep in sync with deno.json + CHANGELOG
 
 // ---------- path & fs helpers (forward slashes work on every OS in Deno) ------
 function home(): string {
@@ -993,6 +994,7 @@ function cmdHelp(): void {
   supa ports <name> [slot]      re-band that project's 543XX ports to a free slot
   supa doctor                   preflight: docker, CLI, registry, ports, config
   supa config [max-active <n> | ram-budget <gb>]    show or set limits
+  supa version                  print the supa version
   supa help                     this
 
 * max-active defaults to 1. Raise it: 'supa config max-active 2', or one-off
@@ -1061,6 +1063,11 @@ async function main(): Promise<void> {
       break;
     case "config":
       cmdConfig(rest);
+      break;
+    case "version":
+    case "--version":
+    case "-V":
+      console.log(`supa ${VERSION}`);
       break;
     case "help":
     case "-h":
