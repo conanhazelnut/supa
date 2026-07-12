@@ -13,20 +13,48 @@ $binDir = if ($env:SUPA_BIN_DIR) { $env:SUPA_BIN_DIR } else { "$env:LOCALAPPDATA
 $version = if ($env:SUPA_VERSION) { $env:SUPA_VERSION } else { "latest" }
 $asset = "supa-x86_64-pc-windows-msvc.exe"
 
-$url = if ($version -eq "latest") {
-  "https://github.com/$repo/releases/latest/download/$asset"
+$base = if ($version -eq "latest") {
+  "https://github.com/$repo/releases/latest/download"
 } else {
-  "https://github.com/$repo/releases/download/$version/$asset"
+  "https://github.com/$repo/releases/download/$version"
 }
+$url = "$base/$asset"
+$sumsUrl = "$base/SHA256SUMS.txt"
 
 Write-Host "supa: installing x86_64-pc-windows-msvc ($version) -> $binDir\supa.exe"
-New-Item -ItemType Directory -Force -Path $binDir | Out-Null
+$tmp = New-TemporaryFile
 try {
-  Invoke-WebRequest -Uri $url -OutFile "$binDir\supa.exe"
+  Invoke-WebRequest -Uri $url -OutFile $tmp
 } catch {
+  Remove-Item $tmp -ErrorAction SilentlyContinue
   Write-Error "supa: download failed ($url). Is a release published? https://github.com/$repo/releases"
   exit 1
 }
+
+# Verify the download against SHA256SUMS.txt. Fail closed on mismatch; only skip
+# if the release publishes no checksum file at all.
+$expected = $null
+try {
+  $sums = (Invoke-WebRequest -Uri $sumsUrl -UseBasicParsing).Content
+  foreach ($line in ($sums -split "\r?\n")) {
+    $parts = $line -split '\s+'
+    if ($parts.Length -ge 2 -and $parts[1] -eq $asset) { $expected = $parts[0].ToLower() }
+  }
+} catch { }
+if ($expected) {
+  $actual = (Get-FileHash $tmp -Algorithm SHA256).Hash.ToLower()
+  if ($actual -ne $expected) {
+    Remove-Item $tmp -Force
+    Write-Error "supa: checksum mismatch for $asset — aborting"
+    exit 1
+  }
+  Write-Host "supa: checksum verified"
+} else {
+  Write-Host "supa: warning — no checksum published for this release; skipping verification"
+}
+
+New-Item -ItemType Directory -Force -Path $binDir | Out-Null
+Move-Item -Force $tmp "$binDir\supa.exe"
 
 # Add install dir to the user PATH if it's not there yet.
 $userPath = [Environment]::GetEnvironmentVariable("Path", "User")

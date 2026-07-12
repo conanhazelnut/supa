@@ -23,9 +23,12 @@ between minor versions.
 - **Secrets stay local.** `supa env --write` writes into your project's dotenv
   and masks secrets in its console output; `supa rotate` reminds you to gitignore
   the private `signing_keys.json`. supa never transmits any of this anywhere.
-- **Release integrity.** Every release ships `SHA256SUMS.txt`. The install script
-  verifies the downloaded binary against it before installing. Binaries are not
-  code-signed yet (see the README for the macOS/Windows first-run note).
+- **Release integrity.** Every release ships `SHA256SUMS.txt`, and both install
+  scripts (`install.sh`, `install.ps1`) verify the downloaded binary against it
+  before installing. Release binaries also carry a signed build-provenance
+  attestation — verify it with
+  `gh attestation verify <binary> --repo conanhazelnut/supa`. Binaries are not
+  yet OS-code-signed (see the README for the macOS/Windows first-run note).
 
 ## Trust boundaries
 
