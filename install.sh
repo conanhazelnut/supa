@@ -13,6 +13,11 @@ REPO="conanhazelnut/supa"
 BIN_DIR="${SUPA_BIN_DIR:-$HOME/.local/bin}"
 VERSION="${SUPA_VERSION:-latest}"
 
+if ! command -v curl >/dev/null 2>&1; then
+  echo "supa: 'curl' is required to install. Install curl and re-run." >&2
+  exit 1
+fi
+
 os="$(uname -s)"
 arch="$(uname -m)"
 case "$os-$arch" in

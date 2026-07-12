@@ -31,7 +31,8 @@ try {
 # Add install dir to the user PATH if it's not there yet.
 $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
 if (($userPath -split ';') -notcontains $binDir) {
-  [Environment]::SetEnvironmentVariable("Path", "$userPath;$binDir", "User")
+  $newPath = if ([string]::IsNullOrEmpty($userPath)) { $binDir } else { "$userPath;$binDir" }
+  [Environment]::SetEnvironmentVariable("Path", $newPath, "User")
   Write-Host "supa: added $binDir to your user PATH (restart the terminal to pick it up)"
 }
 
