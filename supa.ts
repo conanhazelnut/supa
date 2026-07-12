@@ -22,15 +22,15 @@ const OS = Deno.build.os; // "darwin" | "linux" | "windows"
 function home(): string {
   return Deno.env.get("HOME") ?? Deno.env.get("USERPROFILE") ?? ".";
 }
-function join(...parts: string[]): string {
+export function join(...parts: string[]): string {
   return parts.filter((p) => p.length > 0).join("/").replace(/\/{2,}/g, "/");
 }
-function parentDir(p: string): string {
+export function parentDir(p: string): string {
   const norm = p.replace(/\\/g, "/");
   const i = norm.lastIndexOf("/");
   return i <= 0 ? "." : norm.slice(0, i);
 }
-function expandTilde(p: string): string {
+export function expandTilde(p: string): string {
   if (p === "~") return home();
   if (p.startsWith("~/") || p.startsWith("~\\")) return join(home(), p.slice(2));
   return p;
@@ -80,16 +80,11 @@ interface Project {
   root: string;
 }
 
-function readRegistry(): Project[] {
-  const path = registryPath();
-  if (!isFile(path)) {
-    die(
-      `registry not found: ${path}\n` +
-        `  create it (one "name|~/path/to/repo" per line), or set SUPA_HOME / SUPA_REGISTRY. See SUPA.md`,
-    );
-  }
+// Pure: parse registry text into projects (skips comments/blank/malformed lines,
+// expands a leading ~). Exported for tests.
+export function parseRegistry(text: string): Project[] {
   const out: Project[] = [];
-  for (const raw of Deno.readTextFileSync(path).split(/\r?\n/)) {
+  for (const raw of text.split(/\r?\n/)) {
     const line = raw.trim();
     if (line === "" || line.startsWith("#")) continue;
     const i = line.indexOf("|");
@@ -99,6 +94,16 @@ function readRegistry(): Project[] {
     out.push({ name, root: expandTilde(line.slice(i + 1).trim()) });
   }
   return out;
+}
+function readRegistry(): Project[] {
+  const path = registryPath();
+  if (!isFile(path)) {
+    die(
+      `registry not found: ${path}\n` +
+        `  create it (one "name|~/path/to/repo" per line), or set SUPA_HOME / SUPA_REGISTRY. See SUPA.md`,
+    );
+  }
+  return parseRegistry(Deno.readTextFileSync(path));
 }
 function names(): string[] {
   return readRegistry().map((p) => p.name);
@@ -134,21 +139,19 @@ function cfgFile(name: string): string | null {
   const wd = cfgDir(name);
   return wd ? join(wd, "supabase", "config.toml") : null;
 }
-function labelOf(name: string): string | null {
-  const f = cfgFile(name);
-  if (!f || !isFile(f)) return null;
-  for (const line of Deno.readTextFileSync(f).split(/\r?\n/)) {
+// Pure: read project_id from config.toml text. Exported for tests.
+export function parseLabel(text: string): string | null {
+  for (const line of text.split(/\r?\n/)) {
     const m = line.match(/^\s*project_id\s*=\s*"?([^"\s]+)"?/);
     if (m) return m[1];
   }
   return null;
 }
-function portOf(name: string, section: string): string | null {
-  const f = cfgFile(name);
-  if (!f || !isFile(f)) return null;
+// Pure: read the host `port` under `[section]` from config.toml text. Tests.
+export function parsePort(text: string, section: string): string | null {
   const secRe = new RegExp(`^\\s*\\[${section}\\]`);
   let inSection = false;
-  for (const line of Deno.readTextFileSync(f).split(/\r?\n/)) {
+  for (const line of text.split(/\r?\n/)) {
     if (/^\s*\[/.test(line)) inSection = secRe.test(line);
     else if (inSection) {
       const m = line.match(/^\s*port\s*=\s*(\d+)/);
@@ -156,6 +159,16 @@ function portOf(name: string, section: string): string | null {
     }
   }
   return null;
+}
+function labelOf(name: string): string | null {
+  const f = cfgFile(name);
+  if (!f || !isFile(f)) return null;
+  return parseLabel(Deno.readTextFileSync(f));
+}
+function portOf(name: string, section: string): string | null {
+  const f = cfgFile(name);
+  if (!f || !isFile(f)) return null;
+  return parsePort(Deno.readTextFileSync(f), section);
 }
 
 // ---------- persisted config (key = value store) ------------------------------
@@ -214,7 +227,7 @@ function readRamBudget(): number | null {
 }
 
 // ---------- RAM parsing (docker MemUsage "<used> / <limit>") -------------------
-function memToMiB(s: string): number {
+export function memToMiB(s: string): number {
   const m = s.trim().match(/^([\d.]+)\s*([KMGT]?i?B)$/i);
   if (!m) return 0;
   const mult: Record<string, number> = {
@@ -230,7 +243,7 @@ function memToMiB(s: string): number {
   };
   return parseFloat(m[1]) * (mult[m[2].toUpperCase()] ?? 1);
 }
-function fmtMiB(mib: number): string {
+export function fmtMiB(mib: number): string {
   return mib >= 1024 ? `${(mib / 1024).toFixed(1)}GiB` : `${Math.round(mib)}MiB`;
 }
 
@@ -506,7 +519,7 @@ function cmdConfig(rest: string[]): void {
 function requireProject(p: string): void {
   if (rootOf(p) === null) die(`unknown project '${p}' (known: ${names().join(" ")})`);
 }
-function maskSecret(key: string, val: string): string {
+export function maskSecret(key: string, val: string): string {
   if (/KEY|SECRET|TOKEN|PASSWORD|JWT/i.test(key) && val.length > 10) {
     return `${val.slice(0, 4)}…${val.slice(-4)}`;
   }
@@ -514,7 +527,7 @@ function maskSecret(key: string, val: string): string {
 }
 // Merge KEY=VALUE lines from `incoming` into `existing` dotenv text: update keys
 // in place, keep every other line, append genuinely new keys at the end.
-function mergeDotenv(
+export function mergeDotenv(
   existing: string,
   incoming: string,
 ): { text: string; keys: string[]; map: Record<string, string> } {
@@ -547,17 +560,20 @@ function mergeDotenv(
 }
 // Optional per-project rename map at <cfgDir>/supa.env.map: "APP_NAME = NATIVE"
 // per line (# comments ok). One native may map to several app names.
-function readEnvMap(cfgDirPath: string): Array<{ app: string; native: string }> {
-  const mapPath = join(cfgDirPath, "supa.env.map");
-  if (!isFile(mapPath)) return [];
+export function parseEnvMap(text: string): Array<{ app: string; native: string }> {
   const out: Array<{ app: string; native: string }> = [];
-  for (const line of Deno.readTextFileSync(mapPath).split(/\r?\n/)) {
+  for (const line of text.split(/\r?\n/)) {
     const m = line.trim().match(
       /^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([A-Za-z_][A-Za-z0-9_]*)\s*(?:#.*)?$/,
     );
     if (m) out.push({ app: m[1], native: m[2] });
   }
   return out;
+}
+function readEnvMap(cfgDirPath: string): Array<{ app: string; native: string }> {
+  const mapPath = join(cfgDirPath, "supa.env.map");
+  if (!isFile(mapPath)) return [];
+  return parseEnvMap(Deno.readTextFileSync(mapPath));
 }
 async function readLine(prompt: string): Promise<string> {
   await Deno.stdout.write(new TextEncoder().encode(prompt));
@@ -719,18 +735,28 @@ function cmdRm(rest: string[]): void {
   console.log(`supa: removed ${name} from the registry`);
 }
 
-// Re-band every 543XX port in a config file to `slot` (4th digit), keeping the
-// service digit (5th). Only touches ports already on the scheme; backs up first.
-function rebandConfig(f: string, slot: string): string[] {
-  const text = Deno.readTextFileSync(f);
+// Pure: re-band every 543XX port to `slot` (keep the service digit), and pull the
+// edge_runtime inspector_port (default 8083, off-scheme) into 543<slot>8 so it
+// can't collide across projects. Returns updated text + changes. Exported for tests.
+export function rebandText(text: string, slot: string): { text: string; changes: string[] } {
   const changes: string[] = [];
-  const updated = text.replace(/(=[ \t]*)543(\d)(\d)(?!\d)/g, (_m, pre, oldSlot, svc) => {
+  let out = text.replace(/(=[ \t]*)543(\d)(\d)(?!\d)/g, (_m, pre, oldSlot, svc) => {
     if (oldSlot !== slot) changes.push(`543${oldSlot}${svc} -> 543${slot}${svc}`);
     return `${pre}543${slot}${svc}`;
   });
+  out = out.replace(/^([ \t]*inspector_port[ \t]*=[ \t]*)(\d+)/gm, (_m, pre, old) => {
+    const next = `543${slot}8`;
+    if (old !== next) changes.push(`inspector_port ${old} -> ${next}`);
+    return `${pre}${next}`;
+  });
+  return { text: out, changes };
+}
+function rebandConfig(f: string, slot: string): string[] {
+  const src = Deno.readTextFileSync(f);
+  const { text, changes } = rebandText(src, slot);
   if (changes.length) {
-    Deno.writeTextFileSync(`${f}.bak`, text);
-    Deno.writeTextFileSync(f, updated);
+    Deno.writeTextFileSync(`${f}.bak`, src);
+    Deno.writeTextFileSync(f, text);
   }
   return changes;
 }
@@ -866,7 +892,7 @@ async function cmdStats(): Promise<void> {
 }
 
 // Ensure config.toml has an active signing_keys_path; return updated text + path.
-function ensureSigningKeysPath(text: string): { text: string; relPath: string } {
+export function ensureSigningKeysPath(text: string): { text: string; relPath: string } {
   const active = text.match(/^\s*signing_keys_path\s*=\s*"([^"]+)"/m);
   if (active) return { text, relPath: active[1] };
   const commented = /^([ \t]*)#\s*signing_keys_path\s*=\s*"([^"]+)"/m;
@@ -1033,4 +1059,4 @@ async function main(): Promise<void> {
   }
 }
 
-await main();
+if (import.meta.main) await main();
