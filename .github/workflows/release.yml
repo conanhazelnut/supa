@@ -27,10 +27,10 @@ jobs:
 
       - name: Verify
         run: |
-          deno fmt --check supa.ts supa_test.ts
-          deno lint supa.ts supa_test.ts
-          deno check supa.ts supa_test.ts
-          deno test --allow-read --allow-env
+          deno fmt --check *.ts
+          deno lint *.ts
+          deno check *.ts
+          deno test -A
 
       - name: Build all targets + checksums
         run: ./build.sh release   # deno cross-compiles every target from Linux

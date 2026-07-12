@@ -17,12 +17,12 @@ jobs:
         with:
           deno-version: v2.x
       - name: Format
-        run: deno fmt --check supa.ts supa_test.ts
+        run: deno fmt --check *.ts
       - name: Lint
-        run: deno lint supa.ts supa_test.ts
+        run: deno lint *.ts
       - name: Type-check
-        run: deno check supa.ts supa_test.ts
+        run: deno check *.ts
       - name: Test
-        run: deno test --allow-read --allow-env
+        run: deno test -A
       - name: Shell scripts (shellcheck)
         run: shellcheck build.sh install.sh

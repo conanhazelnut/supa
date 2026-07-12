@@ -85,6 +85,7 @@ Same binary, same commands on every OS (`supa` on macOS/Linux, `supa.exe` /
 | `supa config` | show `max_active`, `ram_budget` + resolved paths |
 | `supa config max-active <n>` | set how many stacks may run at once (persists) |
 | `supa config ram-budget <gb>` | warn in `stats` when total RAM exceeds this |
+| `supa version` | print the supa version (`--version` / `-V` too) |
 | `supa help` | usage |
 
 **Notes on the destructive / mutating commands:**
