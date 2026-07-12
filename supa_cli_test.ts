@@ -11,11 +11,14 @@ async function runSupa(
   args: string[],
   home: string,
 ): Promise<{ code: number; out: string; err: string }> {
-  const { code, stdout, stderr } = await new Deno.Command("deno", {
+  const { code, stdout, stderr } = await new Deno.Command(Deno.execPath(), {
     args: ["run", "--no-check", "-A", "supa.ts", ...args],
-    // Pin registry/config into the temp home so an inherited SUPA_* from the
-    // developer's shell can't leak into the test.
+    // clearEnv so NO inherited SUPA_* (max-active, allow-multi, ram-budget, …)
+    // from the developer's shell can leak in; keep only PATH (for the child's
+    // own docker/supabase lookups) and the pinned config vars.
+    clearEnv: true,
     env: {
+      PATH: Deno.env.get("PATH") ?? "",
       SUPA_HOME: home,
       SUPA_REGISTRY: `${home}/supa.registry`,
       SUPA_CONFIG: `${home}/supa.config`,
