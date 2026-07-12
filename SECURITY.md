@@ -30,7 +30,7 @@ between minor versions.
   before installing. Release binaries also carry a signed build-provenance
   attestation — verify it with
   `gh attestation verify <binary> --repo conanhazelnut/supa`. Binaries are not
-  yet OS-code-signed (see the README for the macOS/Windows first-run note).
+  yet OS-code-signed (see SUPA.md for the macOS/Windows first-run note).
 
 ## Trust boundaries
 

@@ -28,3 +28,5 @@ Initial release.
 - Unit + CLI integration test suite; CI runs fmt, lint, type-check, test, and
   shellcheck on every push/PR.
 - `CONTRIBUTING.md`, `SECURITY.md`, `CODE_OF_CONDUCT.md`, issue/PR templates.
+
+[0.1.0]: https://github.com/conanhazelnut/supa/releases/tag/v0.1.0

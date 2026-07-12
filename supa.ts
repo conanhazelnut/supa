@@ -682,6 +682,7 @@ async function cmdDestroy(rest: string[]): Promise<void> {
   }
   console.log(`== destroying ${p}`);
   const code = await runInherit(supabaseCmd(), ["--workdir", wd, "stop", "--no-backup"]);
+  if (code === 127) die(SUPABASE_MISSING);
   if (code !== 0) die(`'supabase stop --no-backup' failed for '${p}' (exit ${code})`);
   const { out } = await runCapture("docker", [
     "volume",
@@ -726,6 +727,7 @@ async function cmdAdd(rest: string[]): Promise<void> {
     } else {
       console.log(`>> supabase init (${abs})`);
       const code = await runInherit(supabaseCmd(), ["--workdir", abs, "init"]);
+      if (code === 127) die(SUPABASE_MISSING);
       if (code !== 0) die(`'supabase init' failed for '${name}' (exit ${code})`);
     }
     const chosen = slot ?? nextFreeSlot() ?? "";
@@ -994,6 +996,7 @@ async function cmdRotate(rest: string[]): Promise<void> {
     supabaseCmd(),
     ["--workdir", wd, "gen", "signing-key", "--algorithm", "ES256"],
   );
+  if (gen.code === 127) die(SUPABASE_MISSING);
   if (gen.code !== 0 || gen.out.trim() === "") die(`'supabase gen signing-key' failed for '${p}'`);
   const cfgText = Deno.readTextFileSync(f);
   const { text: newCfg, relPath } = ensureSigningKeysPath(cfgText);
