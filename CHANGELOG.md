@@ -16,8 +16,17 @@ All notable changes to supa are documented here. This project adheres to
 
 ### Fixed
 
+- **`supa rotate`**: write the signing key as a JWK **array** (Supabase rejects a
+  bare object) and place it beside `config.toml`, where `signing_keys_path`
+  resolves — previously rotate could produce a stack that wouldn't start.
 - `supa ports` / `add --init` now re-band the edge runtime `inspector_port`
   (default `8083`) into `543<slot>8`, preventing a cross-project collision.
+- `supa restart` no longer trips the max-active limit when restarting a running
+  stack.
+- `supa stats` reads each container's real project label (handles `project_id`
+  values containing underscores).
+- Install scripts **fail closed** when a download can't be checksum-verified
+  (override with `SUPA_SKIP_CHECKSUM=1`); `install.ps1` forces TLS 1.2.
 
 ## [0.1.0] — 2026-07-13
 

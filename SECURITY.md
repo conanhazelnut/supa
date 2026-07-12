@@ -18,8 +18,10 @@ between minor versions.
 - **No shell.** supa runs `docker` / `supabase` via `new Deno.Command(cmd, {args})`,
   never through a shell — registry paths and project names can't be used for
   command injection.
-- **Least privilege.** The compiled binary requests only
-  `--allow-read --allow-write --allow-env --allow-run`.
+- **Scoped permissions, no network.** The compiled binary requests
+  `--allow-read --allow-write --allow-env --allow-run` and **not** `--allow-net`
+  — it reads/writes your configs and runs `docker` / `supabase`, and makes no
+  network calls of its own.
 - **Secrets stay local.** `supa env --write` writes into your project's dotenv
   and masks secrets in its console output; `supa rotate` reminds you to gitignore
   the private `signing_keys.json`. supa never transmits any of this anywhere.

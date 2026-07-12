@@ -94,8 +94,9 @@ Same binary, same commands on every OS (`supa` on macOS/Linux, `supa.exe` /
   target and requires you to **type the project name** to confirm; `--yes` skips
   the prompt (for scripts). One project at a time — no `--all`.
 - **`rotate`** generates a new JWT signing key (`supabase gen signing-key`),
-  writes it to the project's `signing_keys.json`, sets `signing_keys_path` in
-  `config.toml` (backing it up), and restarts. Existing tokens/sessions become
+  writes it as a JWK **array** to `signing_keys.json` beside `config.toml` (the
+  location Supabase resolves `signing_keys_path` against), sets `signing_keys_path`
+  in `config.toml` (backing it up), and restarts. Existing tokens/sessions become
   invalid. Same typed-name confirmation as `destroy`. **Gitignore the key file** —
   it holds the private signing key.
 - **`add --init`** runs `supabase init` in the path (skipped if a config already
