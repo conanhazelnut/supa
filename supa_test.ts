@@ -16,6 +16,7 @@ import {
   parsePort,
   parseRegistry,
   rebandText,
+  signingKeyArray,
 } from "./supa.ts";
 
 function eq<T>(actual: T, expected: T, msg = ""): void {
@@ -191,4 +192,31 @@ Deno.test("ensureSigningKeysPath inserts under [auth] when absent", () => {
 Deno.test("ensureSigningKeysPath appends [auth] when there is none", () => {
   const { text } = ensureSigningKeysPath(`project_id = "x"\n`);
   ok(text.includes("[auth]") && text.includes("signing_keys_path"));
+});
+
+// ---------- signing-key normalisation (rotate) --------------------------------
+Deno.test("signingKeyArray wraps a single JWK object in an array", () => {
+  const arr = JSON.parse(signingKeyArray(`{"kty":"EC","kid":"a"}`));
+  eq(Array.isArray(arr), true);
+  eq(arr.length, 1);
+  eq(arr[0].kid, "a");
+});
+Deno.test("signingKeyArray keeps an existing array", () => {
+  const arr = JSON.parse(signingKeyArray(`[{"kty":"EC","kid":"a"},{"kid":"b"}]`));
+  eq(arr.length, 2);
+});
+Deno.test("signingKeyArray handles multi-line JSON and a trailing notice", () => {
+  const out = `{\n  "kty": "EC",\n  "kid": "x"\n}\nA new version of the CLI is available\n`;
+  const arr = JSON.parse(signingKeyArray(out));
+  eq(arr.length, 1);
+  eq(arr[0].kid, "x");
+});
+Deno.test("signingKeyArray throws on garbage", () => {
+  let threw = false;
+  try {
+    signingKeyArray("not json at all");
+  } catch {
+    threw = true;
+  }
+  ok(threw, "should throw on unparseable input");
 });

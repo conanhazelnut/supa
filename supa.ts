@@ -69,10 +69,10 @@ function configDir(): string {
   return join(home(), ".config", "supa");
 }
 function registryPath(): string {
-  return Deno.env.get("SUPA_REGISTRY") ?? join(configDir(), "supa.registry");
+  return Deno.env.get("SUPA_REGISTRY") || join(configDir(), "supa.registry");
 }
 function configPath(): string {
-  return Deno.env.get("SUPA_CONFIG") ?? join(configDir(), "supa.config");
+  return Deno.env.get("SUPA_CONFIG") || join(configDir(), "supa.config");
 }
 
 // ---------- registry (name -> project root) -----------------------------------
@@ -616,8 +616,9 @@ async function cmdRestart(rest: string[]): Promise<void> {
   const running = await runningLabels();
   for (const p of rest) {
     const lbl = labelOf(p);
-    if (lbl && running.includes(lbl)) await stopStack(p);
-    await guard(p);
+    const wasRunning = !!lbl && running.includes(lbl);
+    if (wasRunning) await stopStack(p);
+    else await guard(p); // restarting a running stack is net-zero; starting a stopped one counts
     await startStack(p);
   }
 }
@@ -856,10 +857,18 @@ async function cmdStats(): Promise<void> {
     "--filter",
     "label=com.supabase.cli.project",
     "--format",
-    "{{.Names}}",
+    '{{.Names}}\t{{.Label "com.supabase.cli.project"}}',
   ]);
   if (code !== 0) die("docker not available");
-  const containers = out.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+  const labelByName: Record<string, string> = {};
+  const containers: string[] = [];
+  for (const l of out.split(/\r?\n/)) {
+    const [name, lbl] = l.split("\t");
+    if (name?.trim()) {
+      containers.push(name.trim());
+      labelByName[name.trim()] = (lbl ?? "").trim();
+    }
+  }
   if (containers.length === 0) {
     console.log("no supabase containers running");
     return;
@@ -881,7 +890,7 @@ async function cmdStats(): Promise<void> {
   const perProject: Record<string, number> = {};
   let grand = 0;
   for (const [name, cpu, mem] of rows) {
-    const label = name.split("_").pop() ?? "";
+    const label = labelByName[name] || (name.split("_").pop() ?? "");
     const svc = name.replace(/^supabase_/, "").replace(new RegExp(`_${escapeRegExp(label)}$`), "");
     line([label, svc, cpu, mem]);
     const used = memToMiB((mem ?? "").split("/")[0]);
@@ -910,6 +919,25 @@ async function cmdStats(): Promise<void> {
   }
 }
 
+// Pure: normalize `supabase gen signing-key` output (a single JWK object, or an
+// array, possibly multi-line or with a stray notice) into the JSON *array* text
+// that Supabase's signing_keys file requires. Throws on unparseable input.
+export function signingKeyArray(genOutput: string): string {
+  const iObj = genOutput.indexOf("{");
+  const iArr = genOutput.indexOf("[");
+  const starts = [iObj, iArr].filter((i) => i >= 0);
+  const start = starts.length ? Math.min(...starts) : -1;
+  const end = Math.max(genOutput.lastIndexOf("}"), genOutput.lastIndexOf("]"));
+  const jsonText = start >= 0 && end > start ? genOutput.slice(start, end + 1) : genOutput.trim();
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(jsonText);
+  } catch {
+    throw new Error("could not parse signing key JSON");
+  }
+  const arr = Array.isArray(parsed) ? parsed : [parsed];
+  return JSON.stringify(arr, null, 2) + "\n";
+}
 // Ensure config.toml has an active signing_keys_path; return updated text + path.
 export function ensureSigningKeysPath(text: string): { text: string; relPath: string } {
   const active = text.match(/^\s*signing_keys_path\s*=\s*"([^"]+)"/m);
@@ -954,12 +982,16 @@ async function cmdRotate(rest: string[]): Promise<void> {
   if (gen.code !== 0 || gen.out.trim() === "") die(`'supabase gen signing-key' failed for '${p}'`);
   const cfgText = Deno.readTextFileSync(f);
   const { text: newCfg, relPath } = ensureSigningKeysPath(cfgText);
-  const keyFile = join(wd, relPath.replace(/^\.\//, ""));
-  // keep only the JSON line (guard against CLI notices leaking onto stdout)
-  const keyJson = gen.out.split(/\r?\n/).map((l) => l.trim()).find(
-    (l) => l.startsWith("{") || l.startsWith("["),
-  ) ?? gen.out.trim();
-  Deno.writeTextFileSync(keyFile, `${keyJson}\n`);
+  // Supabase resolves signing_keys_path relative to the supabase/ directory
+  // (where config.toml lives), and the file must be a JSON *array* of JWKs.
+  const keyFile = join(wd, "supabase", relPath.replace(/^\.\//, ""));
+  let keyArrayText: string;
+  try {
+    keyArrayText = signingKeyArray(gen.out);
+  } catch (e) {
+    die(`bad signing key from the Supabase CLI: ${e instanceof Error ? e.message : e}`);
+  }
+  Deno.writeTextFileSync(keyFile, keyArrayText);
   console.log(`  wrote new signing key -> ${keyFile}`);
   if (newCfg !== cfgText) {
     Deno.writeTextFileSync(`${f}.bak`, cfgText);
@@ -994,7 +1026,7 @@ function cmdHelp(): void {
   supa stats                    CPU/MEM per container + per-stack & total RAM
   supa logs <p> [svc] [-f]      tail a stack's container logs
   supa env <p> [--write [f]]    print keys/URLs, or merge them into a .env file
-  supa add <name> <path> [--init]   register a project (--init: init + assign ports)
+  supa add <name> <path> [--init] [--slot N]   register (--init: init + assign ports)
   supa rm <name>                unregister a project
   supa ports <name> [slot]      re-band that project's 543XX ports to a free slot
   supa doctor                   preflight: docker, CLI, registry, ports, config
