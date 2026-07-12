@@ -193,6 +193,11 @@ Deno.test("ensureSigningKeysPath appends [auth] when there is none", () => {
   const { text } = ensureSigningKeysPath(`project_id = "x"\n`);
   ok(text.includes("[auth]") && text.includes("signing_keys_path"));
 });
+Deno.test("ensureSigningKeysPath handles an [auth] header with a trailing comment", () => {
+  const { text } = ensureSigningKeysPath(`[auth] # my auth\nenabled = true\n`);
+  eq((text.match(/^\s*\[auth\]/gm) || []).length, 1); // no duplicate [auth] table
+  ok(text.includes("signing_keys_path"));
+});
 
 // ---------- signing-key normalisation (rotate) --------------------------------
 Deno.test("signingKeyArray wraps a single JWK object in an array", () => {
@@ -216,6 +221,11 @@ Deno.test("signingKeyArray strips a trailing notice that contains brackets", () 
   const arr = JSON.parse(signingKeyArray(out));
   eq(arr.length, 1);
   eq(arr[0].kid, "z");
+});
+Deno.test("signingKeyArray strips a leading notice that contains a brace", () => {
+  const arr = JSON.parse(signingKeyArray(`Use {supabase} upgrade\n{"kty":"EC","kid":"q"}\n`));
+  eq(arr.length, 1);
+  eq(arr[0].kid, "q");
 });
 Deno.test("signingKeyArray throws on garbage", () => {
   let threw = false;

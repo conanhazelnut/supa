@@ -392,6 +392,9 @@ async function cmdSwitch(rest: string[]): Promise<void> {
   if (rest.length !== 1) die("usage: supa switch <project>");
   const target = rest[0];
   if (rootOf(target) === null) die(`unknown project '${target}' (known: ${names().join(" ")})`);
+  // Resolve the target BEFORE stopping anyone, so an unresolvable project doesn't
+  // tear down every running stack and then fail.
+  if (!cfgDir(target)) die(`no supabase/config.toml under '${rootOf(target)}' for '${target}'`);
   const tgt = labelOf(target);
   for (const l of await runningLabels()) {
     if (l === tgt) continue;
@@ -410,6 +413,7 @@ async function cmdEnv(rest: string[]): Promise<void> {
   if (!wd) die(`unresolvable project '${p}'`);
   if (!write) {
     const code = await runInherit(supabaseCmd(), ["--workdir", wd, "status", "-o", "env"]);
+    if (code === 127) die(SUPABASE_MISSING);
     if (code !== 0) Deno.exit(code);
     return;
   }
@@ -924,19 +928,24 @@ async function cmdStats(): Promise<void> {
 // array, possibly multi-line or with a stray notice) into the JSON *array* text
 // that Supabase's signing_keys file requires. Throws on unparseable input.
 export function signingKeyArray(genOutput: string): string {
-  const starts = [genOutput.indexOf("{"), genOutput.indexOf("[")].filter((i) => i >= 0);
-  if (!starts.length) throw new Error("could not parse signing key JSON");
-  const start = Math.min(...starts);
-  // Try progressively shorter slices from the end so a trailing CLI notice —
-  // even one that itself contains brackets — is stripped before parsing.
+  // Candidate starts: every '{' / '[' (handles a leading CLI notice containing a
+  // brace). For each start, shrink the end to the last structural close that
+  // parses (handles a trailing notice too). First successful parse wins.
+  const starts: number[] = [];
+  for (let i = 0; i < genOutput.length; i++) {
+    if (genOutput[i] === "{" || genOutput[i] === "[") starts.push(i);
+  }
   let parsed: unknown;
-  for (let end = genOutput.length; end > start; end--) {
-    const c = genOutput[end - 1];
-    if (c !== "}" && c !== "]") continue;
-    try {
-      parsed = JSON.parse(genOutput.slice(start, end));
-      break;
-    } catch { /* keep shrinking */ }
+  outer:
+  for (const start of starts) {
+    for (let end = genOutput.length; end > start; end--) {
+      const c = genOutput[end - 1];
+      if (c !== "}" && c !== "]") continue;
+      try {
+        parsed = JSON.parse(genOutput.slice(start, end));
+        break outer;
+      } catch { /* keep shrinking */ }
+    }
   }
   if (parsed === undefined) throw new Error("could not parse signing key JSON");
   const arr = Array.isArray(parsed) ? parsed : [parsed];
@@ -952,9 +961,10 @@ export function ensureSigningKeysPath(text: string): { text: string; relPath: st
     return { text: text.replace(commented, `$1signing_keys_path = "${cm[2]}"`), relPath: cm[2] };
   }
   const rel = "./signing_keys.json";
-  if (/^[ \t]*\[auth\][ \t]*$/m.test(text)) {
+  const authHeader = /^[ \t]*\[auth\][ \t]*(#.*)?$/m;
+  if (authHeader.test(text)) {
     return {
-      text: text.replace(/^([ \t]*\[auth\][ \t]*)$/m, `$1\nsigning_keys_path = "${rel}"`),
+      text: text.replace(authHeader, (m) => `${m}\nsigning_keys_path = "${rel}"`),
       relPath: rel,
     };
   }
