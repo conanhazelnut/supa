@@ -1,0 +1,19 @@
+# supa registry — the ONLY thing you maintain by hand: name -> project repo root.
+# Copy this file to `supa.registry` (same dir) and edit it for your machine.
+#
+# Format (one per line):   name|path
+#   * name  — what you type:  supa up <name>          (a friendly alias)
+#   * path  — the repo root.  supa auto-finds supabase/config.toml under it
+#             (at the root, or under apps/<x>/, or examples/<x>/) and reads the
+#             docker label (project_id) and live ports straight from that file.
+#
+# Path rules (cross-platform):
+#   * A leading ~ expands to your home dir on every OS.
+#   * Use forward slashes even on Windows (C:/code/web works).
+#   * Absolute paths work too.
+#
+# Blank lines and lines starting with # are ignored.
+# Override this file's location with SUPA_REGISTRY, or its dir with SUPA_HOME.
+
+web|~/code/web
+api|~/code/api

@@ -1,0 +1,15 @@
+# Your machine's registry + local config — ship supa.registry.example, keep yours private
+supa.registry
+supa.config
+
+# Compiled binaries (build with ./build.sh)
+dist/
+
+# config.toml backups written by `supa ports` / `supa rotate`
+*.bak
+
+# Per-project signing keys are private — never commit
+**/signing_keys.json
+
+# OS noise
+.DS_Store
