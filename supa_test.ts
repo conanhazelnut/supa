@@ -211,6 +211,12 @@ Deno.test("signingKeyArray handles multi-line JSON and a trailing notice", () =>
   eq(arr.length, 1);
   eq(arr[0].kid, "x");
 });
+Deno.test("signingKeyArray strips a trailing notice that contains brackets", () => {
+  const out = `{"kty":"EC","kid":"z"}\nRun [supabase upgrade] to update.\n`;
+  const arr = JSON.parse(signingKeyArray(out));
+  eq(arr.length, 1);
+  eq(arr[0].kid, "z");
+});
 Deno.test("signingKeyArray throws on garbage", () => {
   let threw = false;
   try {

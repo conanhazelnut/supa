@@ -703,6 +703,7 @@ async function cmdAdd(rest: string[]): Promise<void> {
     else pos.push(rest[i]);
   }
   if (pos.length !== 2) die("usage: supa add <name> <path> [--init] [--slot 0-9]");
+  if (slot !== undefined && !/^\d$/.test(slot)) die("--slot must be a single digit 0-9");
   const [name, path] = pos;
   if (!/^[A-Za-z0-9._-]+$/.test(name)) die(`invalid name '${name}' (use letters/digits/._-)`);
   if (names().includes(name)) die(`'${name}' is already registered`);
@@ -923,18 +924,21 @@ async function cmdStats(): Promise<void> {
 // array, possibly multi-line or with a stray notice) into the JSON *array* text
 // that Supabase's signing_keys file requires. Throws on unparseable input.
 export function signingKeyArray(genOutput: string): string {
-  const iObj = genOutput.indexOf("{");
-  const iArr = genOutput.indexOf("[");
-  const starts = [iObj, iArr].filter((i) => i >= 0);
-  const start = starts.length ? Math.min(...starts) : -1;
-  const end = Math.max(genOutput.lastIndexOf("}"), genOutput.lastIndexOf("]"));
-  const jsonText = start >= 0 && end > start ? genOutput.slice(start, end + 1) : genOutput.trim();
+  const starts = [genOutput.indexOf("{"), genOutput.indexOf("[")].filter((i) => i >= 0);
+  if (!starts.length) throw new Error("could not parse signing key JSON");
+  const start = Math.min(...starts);
+  // Try progressively shorter slices from the end so a trailing CLI notice —
+  // even one that itself contains brackets — is stripped before parsing.
   let parsed: unknown;
-  try {
-    parsed = JSON.parse(jsonText);
-  } catch {
-    throw new Error("could not parse signing key JSON");
+  for (let end = genOutput.length; end > start; end--) {
+    const c = genOutput[end - 1];
+    if (c !== "}" && c !== "]") continue;
+    try {
+      parsed = JSON.parse(genOutput.slice(start, end));
+      break;
+    } catch { /* keep shrinking */ }
   }
+  if (parsed === undefined) throw new Error("could not parse signing key JSON");
   const arr = Array.isArray(parsed) ? parsed : [parsed];
   return JSON.stringify(arr, null, 2) + "\n";
 }

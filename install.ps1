@@ -76,7 +76,7 @@ $cfg = if ($env:SUPA_HOME) { $env:SUPA_HOME } else { "$env:APPDATA\supa" }
 if (-not (Test-Path "$cfg\supa.registry")) {
   New-Item -ItemType Directory -Force -Path $cfg | Out-Null
   try {
-    Invoke-WebRequest -Uri "https://raw.githubusercontent.com/$repo/main/supa.registry.example" -OutFile "$cfg\supa.registry"
+    Invoke-WebRequest -Uri "https://raw.githubusercontent.com/$repo/main/supa.registry.example" -OutFile "$cfg\supa.registry" -UseBasicParsing
     Write-Host "supa: seeded a starter registry at $cfg\supa.registry (edit it)"
   } catch { }
 }
