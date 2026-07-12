@@ -47,11 +47,18 @@ if ! curl -fSL --proto '=https' --tlsv1.2 "$url" -o "$tmp"; then
   rm -f "$tmp"; exit 1
 fi
 
-# Verify the download against SHA256SUMS.txt. Fail closed on mismatch; only skip
-# if the release publishes no checksum file at all.
-sums="$(curl -fsSL --proto '=https' --tlsv1.2 "$sums_url" 2>/dev/null || true)"
-expected="$(printf '%s\n' "$sums" | awk -v f="supa-$target" '$2 == f {print $1}')"
-if [ -n "$expected" ]; then
+# Verify the download against SHA256SUMS.txt. Fail CLOSED: if we can't verify,
+# refuse to install (override deliberately with SUPA_SKIP_CHECKSUM=1).
+if [ "${SUPA_SKIP_CHECKSUM:-}" = "1" ]; then
+  echo "supa: SUPA_SKIP_CHECKSUM=1 — skipping checksum verification" >&2
+else
+  sums="$(curl -fsSL --proto '=https' --tlsv1.2 "$sums_url" 2>/dev/null || true)"
+  expected="$(printf '%s\n' "$sums" | awk -v f="supa-$target" '$2 == f {print $1}')"
+  if [ -z "$expected" ]; then
+    echo "supa: cannot verify download — no SHA256SUMS entry for supa-$target." >&2
+    echo "     Refusing to install unverified. Override with SUPA_SKIP_CHECKSUM=1." >&2
+    rm -f "$tmp"; exit 1
+  fi
   if command -v sha256sum >/dev/null 2>&1; then
     actual="$(sha256sum "$tmp" | awk '{print $1}')"
   else
@@ -62,8 +69,6 @@ if [ -n "$expected" ]; then
     rm -f "$tmp"; exit 1
   fi
   echo "supa: checksum verified"
-else
-  echo "supa: warning — no checksum published for this release; skipping verification" >&2
 fi
 
 chmod +x "$tmp"

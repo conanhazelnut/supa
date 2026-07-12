@@ -13,7 +13,13 @@ async function runSupa(
 ): Promise<{ code: number; out: string; err: string }> {
   const { code, stdout, stderr } = await new Deno.Command("deno", {
     args: ["run", "--no-check", "-A", "supa.ts", ...args],
-    env: { SUPA_HOME: home },
+    // Pin registry/config into the temp home so an inherited SUPA_* from the
+    // developer's shell can't leak into the test.
+    env: {
+      SUPA_HOME: home,
+      SUPA_REGISTRY: `${home}/supa.registry`,
+      SUPA_CONFIG: `${home}/supa.config`,
+    },
     stdout: "piped",
     stderr: "piped",
   }).output();

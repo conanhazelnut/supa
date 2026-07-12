@@ -7,6 +7,8 @@
 #   $env:SUPA_VERSION   tag to install (default: latest)
 #   $env:SUPA_BIN_DIR   install dir     (default: %LOCALAPPDATA%\supa\bin)
 $ErrorActionPreference = "Stop"
+# Windows PowerShell 5.1 may not negotiate TLS 1.2 by default.
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
 $repo = "conanhazelnut/supa"
 $binDir = if ($env:SUPA_BIN_DIR) { $env:SUPA_BIN_DIR } else { "$env:LOCALAPPDATA\supa\bin" }
@@ -24,24 +26,31 @@ $sumsUrl = "$base/SHA256SUMS.txt"
 Write-Host "supa: installing x86_64-pc-windows-msvc ($version) -> $binDir\supa.exe"
 $tmp = New-TemporaryFile
 try {
-  Invoke-WebRequest -Uri $url -OutFile $tmp
+  Invoke-WebRequest -Uri $url -OutFile $tmp -UseBasicParsing
 } catch {
   Remove-Item $tmp -ErrorAction SilentlyContinue
   Write-Error "supa: download failed ($url). Is a release published? https://github.com/$repo/releases"
   exit 1
 }
 
-# Verify the download against SHA256SUMS.txt. Fail closed on mismatch; only skip
-# if the release publishes no checksum file at all.
-$expected = $null
-try {
-  $sums = (Invoke-WebRequest -Uri $sumsUrl -UseBasicParsing).Content
-  foreach ($line in ($sums -split "\r?\n")) {
-    $parts = $line -split '\s+'
-    if ($parts.Length -ge 2 -and $parts[1] -eq $asset) { $expected = $parts[0].ToLower() }
+# Verify against SHA256SUMS.txt. Fail CLOSED: refuse to install if we can't
+# verify (override deliberately with $env:SUPA_SKIP_CHECKSUM = '1').
+if ($env:SUPA_SKIP_CHECKSUM -eq "1") {
+  Write-Host "supa: SUPA_SKIP_CHECKSUM=1 — skipping checksum verification"
+} else {
+  $expected = $null
+  try {
+    $sums = (Invoke-WebRequest -Uri $sumsUrl -UseBasicParsing).Content
+    foreach ($line in ($sums -split "\r?\n")) {
+      $parts = $line -split '\s+'
+      if ($parts.Length -ge 2 -and $parts[1] -eq $asset) { $expected = $parts[0].ToLower() }
+    }
+  } catch { }
+  if (-not $expected) {
+    Remove-Item $tmp -Force
+    Write-Error "supa: cannot verify download — no SHA256SUMS entry for $asset. Override with `$env:SUPA_SKIP_CHECKSUM='1'."
+    exit 1
   }
-} catch { }
-if ($expected) {
   $actual = (Get-FileHash $tmp -Algorithm SHA256).Hash.ToLower()
   if ($actual -ne $expected) {
     Remove-Item $tmp -Force
@@ -49,8 +58,6 @@ if ($expected) {
     exit 1
   }
   Write-Host "supa: checksum verified"
-} else {
-  Write-Host "supa: warning — no checksum published for this release; skipping verification"
 }
 
 New-Item -ItemType Directory -Force -Path $binDir | Out-Null
