@@ -1,23 +1,25 @@
 // Tests for supa's pure parsing/formatting logic. Zero dependencies — a tiny
 // inline assert keeps the whole project dependency-free.  Run: deno test
 import {
-  applyEnvMap,
-  ensureSigningKeysPath,
   escapeRegExp,
   expandTilde,
   fmtMiB,
   join,
   maskSecret,
   memToMiB,
-  mergeDotenv,
   parentDir,
+} from "./util.ts";
+import {
+  applyEnvMap,
+  ensureSigningKeysPath,
+  mergeDotenv,
   parseEnvMap,
   parseLabel,
   parsePort,
   parseRegistry,
   rebandText,
   signingKeyArray,
-} from "./supa.ts";
+} from "./parse.ts";
 
 function eq<T>(actual: T, expected: T, msg = ""): void {
   const a = JSON.stringify(actual), e = JSON.stringify(expected);

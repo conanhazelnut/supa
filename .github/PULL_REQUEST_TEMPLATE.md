@@ -8,6 +8,6 @@
 
 - [ ] `deno task ok` passes (fmt, lint, type-check, test)
 - [ ] Added/updated tests for any behaviour change
-- [ ] Updated docs (`README.md` / `SUPA.md` / `PORTS.md` / `cmdHelp` in `supa.ts`)
+- [ ] Updated docs (`README.md` / `SUPA.md` / `PORTS.md` / `cmdHelp` in `src/commands.ts`)
 - [ ] Added a `CHANGELOG.md` entry under `## [Unreleased]`
 - [ ] Kept it cross-platform (no `sh -c`, forward slashes, no new runtime deps)

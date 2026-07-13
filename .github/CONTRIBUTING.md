@@ -5,9 +5,10 @@ it that way are very welcome.
 
 ## Design principles (please keep these)
 
-- **One file, one binary.** All logic lives in `supa.ts`, compiled with
-  `deno compile`. No runtime dependencies for the user beyond Docker and the
-  Supabase CLI — supa is a thin coordinator, not a container runtime.
+- **One codebase, one binary.** A thin `main.ts` dispatches into `src/` modules
+  (util → parse → config → supabase → commands), compiled with `deno compile`. No
+  runtime dependencies for the user beyond Docker and the Supabase CLI — supa is a
+  thin coordinator, not a container runtime.
 - **Cross-platform.** It must work on macOS, Linux, and Windows. Use forward
   slashes, avoid shelling through a shell (always `new Deno.Command(cmd, {args})`,
   never `sh -c`), and don't assume a Unix-only path layout.
@@ -15,7 +16,8 @@ it that way are very welcome.
   `supabase/config.toml` at call time. supa's own state is just the registry
   (`name|path`) and a tiny config (`max_active`, `ram_budget_gb`).
 - **Pure logic is tested.** Parsing/formatting functions are exported and covered
-  in `supa_test.ts`. Add a test with any logic change.
+  in `src/lib_test.ts` (unit) and `cli_test.ts` (integration). Add a test with any
+  logic change.
 
 ## Dev setup
 
@@ -37,7 +39,7 @@ CI runs the same `deno fmt --check`, `deno lint`, `deno check`, `deno test`, and
 2. Run `deno task ok` locally first.
 3. Add/update tests for any behaviour change.
 4. Update the docs that describe the behaviour (`README.md`, `SUPA.md`,
-   `PORTS.md`, and the `cmdHelp` text in `supa.ts`) so they stay in sync.
+   `PORTS.md`, and the `cmdHelp` text in `src/commands.ts`) so they stay in sync.
 5. Update `CHANGELOG.md` under an `## [Unreleased]` heading.
 
 ## Releases (maintainers)

@@ -36,10 +36,10 @@ So Postgres for slot `2` = `543` + `2` + `2` = **54322**.
 
 ## Allocation (example — keep in sync as you add projects)
 
-| Project  | Slot | Band      | API   | Postgres | Studio |
-| -------- | ---- | --------- | ----- | -------- | ------ |
-| web      | 1    | `5431X`   | 54311 | 54312    | 54313  |
-| api      | 2    | `5432X`   | 54321 | 54322    | 54323  |
+| Project  | Slot | Band      | API   | Postgres | Studio                       |
+| -------- | ---- | --------- | ----- | -------- | ---------------------------- |
+| web      | 1    | `5431X`   | 54311 | 54312    | 54313                        |
+| api      | 2    | `5432X`   | 54321 | 54322    | 54323                        |
 | _(free)_ | 3…9  | `5433X` … |       |          | reserved for future projects |
 
 > `supa` also resolves a `supabase/config.toml` that lives under `apps/<x>/` or

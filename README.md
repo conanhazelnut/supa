@@ -7,20 +7,20 @@
 A thin, cross-platform CLI for running **multiple local Supabase stacks — one per
 project — on a single machine**, on top of the official
 [Supabase CLI](https://supabase.com/docs/guides/local-development). No hand-rolled
-Docker Compose: the CLI still owns every container; supa just decides *which*
+Docker Compose: the CLI still owns every container; supa just decides _which_
 stacks run (up to a limit you set) and reads each stack's live facts (Docker
 label, host ports) straight from that project's `supabase/config.toml`.
 
-One TypeScript source (`supa.ts`) compiled with `deno compile` to native binaries
-— `supa` (macOS/Linux) and `supa.exe` (Windows). Whoever runs it needs nothing
-installed beyond **Docker** and the **Supabase CLI**.
+TypeScript (a thin `main.ts` over `src/`) compiled with `deno compile` to native
+binaries — `supa` (macOS/Linux) and `supa.exe` (Windows). Whoever runs it needs
+nothing installed beyond **Docker** and the **Supabase CLI**.
 
 ## Why
 
 Running several local Supabase projects means juggling ports, Docker labels, and
 which stack is up. The Supabase CLI gives you the primitives (`--workdir`,
 per-project `project_id`) but no manager on top. supa is that manager — and
-deliberately a *thin* one: it wraps the CLI instead of replacing it, and derives
+deliberately a _thin_ one: it wraps the CLI instead of replacing it, and derives
 everything it can from each project's `config.toml` so nothing drifts.
 
 ## Install
@@ -28,11 +28,13 @@ everything it can from each project's `config.toml` so nothing drifts.
 Downloads the prebuilt binary for your platform — no compiler, no Deno.
 
 **macOS / Linux**
+
 ```sh
 curl -fsSL https://raw.githubusercontent.com/conanhazelnut/supa/main/install.sh | sh
 ```
 
 **Windows (PowerShell)**
+
 ```powershell
 irm https://raw.githubusercontent.com/conanhazelnut/supa/main/install.ps1 | iex
 ```
@@ -75,11 +77,11 @@ supa add newapp ~/code/newapp --init   # register + scaffold + assign ports
 
 Run `supa help` for the full list.
 
-| Group | Commands |
-| --- | --- |
+| Group         | Commands                                                            |
+| ------------- | ------------------------------------------------------------------- |
 | **Lifecycle** | `up` · `down [--all]` · `restart` · `switch` · `destroy` · `rotate` |
-| **Inspect** | `ls` · `status` · `stats` · `logs` · `doctor` · `env [--write]` |
-| **Manage** | `add [--init]` · `rm` · `ports` · `config` |
+| **Inspect**   | `ls` · `status` · `stats` · `logs` · `doctor` · `env [--write]`     |
+| **Manage**    | `add [--init]` · `rm` · `ports` · `config`                          |
 
 Destructive commands — `destroy` (deletes a stack's data) and `rotate`
 (invalidates existing tokens) — require typing the project name to confirm.

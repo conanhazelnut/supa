@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build native `supa` binaries from supa.ts into ./dist (gitignored).
+# Build native `supa` binaries from main.ts into ./dist (gitignored).
 #
 #   ./build.sh              build for this host + Windows x64 (quick local dev)
 #   ./build.sh host         build only for this host
@@ -30,18 +30,18 @@ TARGETS=(
 
 build_host() {
   echo "▶ host ($(uname -s) $(uname -m)) → dist/supa"
-  deno compile "${PERMS[@]}" --output dist/supa supa.ts
+  deno compile "${PERMS[@]}" --output dist/supa main.ts
 }
 build_windows() {
   echo "▶ windows (x86_64) → dist/supa.exe"
-  deno compile "${PERMS[@]}" --target x86_64-pc-windows-msvc --output dist/supa.exe supa.ts
+  deno compile "${PERMS[@]}" --target x86_64-pc-windows-msvc --output dist/supa.exe main.ts
 }
 build_release() {
   for t in "${TARGETS[@]}"; do
     out="dist/supa-$t"
     [[ "$t" == *windows* ]] && out="$out.exe"
     echo "▶ $t → $out"
-    deno compile "${PERMS[@]}" --target "$t" --output "$out" supa.ts
+    deno compile "${PERMS[@]}" --target "$t" --output "$out" main.ts
   done
   echo "▶ checksums → dist/SHA256SUMS.txt"
   (

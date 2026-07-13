@@ -1,4 +1,4 @@
-// End-to-end CLI tests: spawn `supa.ts` as a subprocess against a throwaway
+// End-to-end CLI tests: spawn `main.ts` as a subprocess against a throwaway
 // SUPA_HOME so nothing touches real config. No Docker needed — the commands
 // exercised here (version/help/config/add/rm/ls) degrade gracefully without it.
 // Run: deno test -A
@@ -27,7 +27,7 @@ async function runSupa(
     }
   }
   const { code, stdout, stderr } = await new Deno.Command(Deno.execPath(), {
-    args: ["run", "--no-check", "-A", "supa.ts", ...args],
+    args: ["run", "--no-check", "-A", "main.ts", ...args],
     clearEnv: true,
     env,
     stdout: "piped",
