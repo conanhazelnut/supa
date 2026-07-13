@@ -167,7 +167,7 @@ admin|~/code/admin
 ## Installing
 
 Most users don't build anything — the install scripts download a prebuilt binary
-(see the [README](./README.md)):
+(see the [README](../README.md)):
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/conanhazelnut/supa/main/install.sh | sh   # macOS/Linux

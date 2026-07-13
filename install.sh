@@ -79,7 +79,7 @@ cfg="${SUPA_HOME:-${XDG_CONFIG_HOME:-$HOME/.config}/supa}"
 if [ ! -f "$cfg/supa.registry" ]; then
   mkdir -p "$cfg"
   curl -fsSL --proto '=https' --tlsv1.2 \
-    "https://raw.githubusercontent.com/$REPO/main/supa.registry.example" \
+    "https://raw.githubusercontent.com/$REPO/main/examples/supa.registry.example" \
     -o "$cfg/supa.registry" 2>/dev/null || true
   [ -f "$cfg/supa.registry" ] && echo "supa: seeded a starter registry at $cfg/supa.registry (edit it)"
 fi

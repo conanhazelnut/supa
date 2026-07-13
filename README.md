@@ -94,8 +94,8 @@ Destructive commands — `destroy` (deletes a stack's data) and `rotate`
 - Which services run, the Postgres version, and image versions live in each
   project's `config.toml` — supa reads it live; edit it, then `supa restart`.
 
-Full guide: **[SUPA.md](./SUPA.md)** · port scheme: **[PORTS.md](./PORTS.md)** ·
-roadmap: **[MILESTONE.md](./MILESTONE.md)**.
+Full guide: **[SUPA.md](./docs/SUPA.md)** · port scheme: **[PORTS.md](./docs/PORTS.md)** ·
+roadmap: **[MILESTONE.md](./docs/MILESTONE.md)**.
 
 ## Requirements
 
