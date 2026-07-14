@@ -25,6 +25,7 @@ import {
   cmdLs,
   cmdPorts,
   cmdRestart,
+  cmdRestore,
   cmdRm,
   cmdRotate,
   cmdStats,
@@ -65,6 +66,9 @@ async function main(): Promise<void> {
       break;
     case "backup":
       await cmdBackup(rest);
+      break;
+    case "restore":
+      await cmdRestore(rest);
       break;
     case "status":
     case "ps":

@@ -17,6 +17,7 @@ import {
   backupFileName,
   type BackupType,
   ensureSigningKeysPath,
+  latestBackup,
   mergeDotenv,
   resolveBackupDir,
   signingKeyArray,
@@ -33,6 +34,7 @@ import {
   portOf,
   readBackupDir,
   readEnvMap,
+  readHooks,
   readMaxActive,
   readRamBudget,
   readRegistry,
@@ -42,11 +44,13 @@ import {
   setConfigKey,
 } from "./config.ts";
 import {
+  dbContainer,
   guard,
   nameForLabel,
   runCapture,
   runInherit,
   runningLabels,
+  runStdinFile,
   startStack,
   stopStack,
   SUPABASE_MISSING,
@@ -547,54 +551,18 @@ export async function cmdRotate(rest: string[]): Promise<void> {
   }
   console.log(`✓ rotated ${p}`);
 }
-export async function cmdBackup(rest: string[]): Promise<void> {
-  const usage =
-    "usage: supa backup <project> [--data-only|--schema-only|--roles-only] [--out <dir>] [--use-copy]";
-  const flags = new Set<string>();
-  const pos: string[] = [];
-  let out: string | undefined;
-  for (let i = 0; i < rest.length; i++) {
-    const a = rest[i];
-    if (a === "--out") out = rest[++i];
-    else if (a.startsWith("-")) flags.add(a);
-    else pos.push(a);
-  }
-  if (pos.length !== 1) die(usage);
-  const p = pos[0];
-  requireProject(p);
-  const wd = cfgDir(p);
-  if (!wd) die(`unresolvable project '${p}'`);
-
-  // Exactly one part-selector, or none (= full: roles + schema + data).
-  const picked =
-    ([["--data-only", "data"], ["--schema-only", "schema"], ["--roles-only", "roles"]] as const)
-      .filter(([f]) => flags.has(f));
-  if (picked.length > 1) die("choose only one of --data-only / --schema-only / --roles-only");
-  const type: BackupType = picked.length ? picked[0][1] : "full";
-  const useCopy = flags.has("--use-copy");
-
-  // A dump reads the live DB, so the stack has to be up.
-  const lbl = labelOf(p);
-  if (!lbl || !(await runningLabels()).includes(lbl)) {
-    die(`'${p}' isn't running — start it first: supa up ${p}`);
-  }
-
-  let dir: string;
-  try {
-    dir = resolveBackupDir({ out, configured: readBackupDir(), projectRoot: rootOf(p) });
-  } catch {
-    die(`could not resolve a backup directory for '${p}' (pass --out <dir>)`);
-  }
-  try {
-    Deno.mkdirSync(dir, { recursive: true });
-  } catch (e) {
-    die(`cannot create backup dir ${dir}: ${e instanceof Error ? e.message : e}`);
-  }
-  const finalPath = join(dir, backupFileName(p, type, tsStamp(new Date())));
+// Dump `type` (roles/schema/data, or full) for project p into finalPath, atomically:
+// each part → a temp file, concatenated in restore order, then renamed into place
+// so a failed dump never leaves a usable-looking file. Throws on failure; callers
+// die. Assumes the target directory already exists and the stack is up.
+async function performBackup(
+  p: string,
+  wd: string,
+  type: BackupType,
+  useCopy: boolean,
+  finalPath: string,
+): Promise<void> {
   const partial = `${finalPath}.partial`;
-
-  // Each part → a temp file; concatenate in restore order (roles, schema, data)
-  // and rename atomically so a failed dump never leaves a usable-looking file.
   const dataArgs = useCopy ? ["--data-only", "--use-copy"] : ["--data-only"];
   const partsFor: Record<BackupType, Array<{ label: string; args: string[] }>> = {
     roles: [{ label: "roles", args: ["--role-only"] }],
@@ -607,8 +575,6 @@ export async function cmdBackup(rest: string[]): Promise<void> {
     ],
   };
   const parts = partsFor[type];
-  console.log(`>> backup ${p} (${type}) → ${finalPath}`);
-
   const temps: string[] = [];
   try {
     const chunks: string[] = [];
@@ -629,27 +595,208 @@ export async function cmdBackup(rest: string[]): Promise<void> {
     Deno.writeTextFileSync(partial, chunks.join("\n"));
     Deno.renameSync(partial, finalPath);
   } catch (e) {
+    try {
+      Deno.removeSync(partial);
+    } catch { /* ignore */ }
+    throw e;
+  } finally {
     for (const t of temps) {
       try {
         Deno.removeSync(t);
       } catch { /* ignore */ }
     }
-    try {
-      Deno.removeSync(partial);
-    } catch { /* ignore */ }
-    die(e instanceof Error ? e.message : String(e));
   }
-  for (const t of temps) {
-    try {
-      Deno.removeSync(t);
-    } catch { /* ignore */ }
+}
+function fmtBytes(bytes: number): string {
+  const kib = bytes / 1024;
+  return kib >= 1024 ? `${(kib / 1024).toFixed(1)} MiB` : `${Math.max(1, Math.round(kib))} KiB`;
+}
+// Run a project-declared hook. Hooks are the ONE place supa uses a shell — the
+// command is user-authored config (like a Makefile target), run in the project
+// dir, so this is a deliberate, trusted exception to the no-shell rule.
+async function runHook(kind: string, cmd: string, cwd: string): Promise<void> {
+  console.log(`  hook (${kind}): ${cmd}`);
+  const [sh, flag] = OS === "windows" ? ["cmd", "/c"] : ["sh", "-c"];
+  let code: number;
+  try {
+    code = (await new Deno.Command(sh, {
+      args: [flag, cmd],
+      cwd,
+      stdout: "inherit",
+      stderr: "inherit",
+      stdin: "inherit",
+    }).output()).code;
+  } catch {
+    code = 127;
+  }
+  if (code !== 0) die(`${kind} hook failed (exit ${code}): ${cmd}`);
+}
+export async function cmdBackup(rest: string[]): Promise<void> {
+  const usage =
+    "usage: supa backup <project> [--data-only|--schema-only|--roles-only] [--out <dir>] [--use-copy]";
+  const flags = new Set<string>();
+  const pos: string[] = [];
+  let out: string | undefined;
+  for (let i = 0; i < rest.length; i++) {
+    const a = rest[i];
+    if (a === "--out") out = rest[++i];
+    else if (a.startsWith("-")) flags.add(a);
+    else pos.push(a);
+  }
+  if (pos.length !== 1) die(usage);
+  const p = pos[0];
+  requireProject(p);
+  const wd = cfgDir(p);
+  if (!wd) die(`unresolvable project '${p}'`);
+
+  // Exactly one part-selector, or none → the project's backup.type hook, else full.
+  const picked =
+    ([["--data-only", "data"], ["--schema-only", "schema"], ["--roles-only", "roles"]] as const)
+      .filter(([f]) => flags.has(f));
+  if (picked.length > 1) die("choose only one of --data-only / --schema-only / --roles-only");
+  const type: BackupType = picked.length ? picked[0][1] : (readHooks(wd).backupType ?? "full");
+  const useCopy = flags.has("--use-copy");
+
+  // A dump reads the live DB, so the stack has to be up.
+  const lbl = labelOf(p);
+  if (!lbl || !(await runningLabels()).includes(lbl)) {
+    die(`'${p}' isn't running — start it first: supa up ${p}`);
   }
 
-  const kib = Deno.statSync(finalPath).size / 1024;
-  const size = kib >= 1024
-    ? `${(kib / 1024).toFixed(1)} MiB`
-    : `${Math.max(1, Math.round(kib))} KiB`;
-  console.log(`✓ backed up ${p} → ${finalPath} (${size})`);
+  let dir: string;
+  try {
+    dir = resolveBackupDir({ out, configured: readBackupDir(), projectRoot: rootOf(p) });
+  } catch {
+    die(`could not resolve a backup directory for '${p}' (pass --out <dir>)`);
+  }
+  try {
+    Deno.mkdirSync(dir, { recursive: true });
+  } catch (e) {
+    die(`cannot create backup dir ${dir}: ${e instanceof Error ? e.message : e}`);
+  }
+  const finalPath = join(dir, backupFileName(p, type, tsStamp(new Date())));
+  console.log(`>> backup ${p} (${type}) → ${finalPath}`);
+  try {
+    await performBackup(p, wd, type, useCopy, finalPath);
+  } catch (e) {
+    die(e instanceof Error ? e.message : String(e));
+  }
+  console.log(`✓ backed up ${p} → ${finalPath} (${fmtBytes(Deno.statSync(finalPath).size)})`);
+}
+export async function cmdRestore(rest: string[]): Promise<void> {
+  const usage = "usage: supa restore <project> (<file> | --latest) [--yes] [--db <name>] [--no-tx]";
+  const flags = new Set<string>();
+  const pos: string[] = [];
+  let dbName = "postgres";
+  for (let i = 0; i < rest.length; i++) {
+    const a = rest[i];
+    if (a === "--db") dbName = rest[++i];
+    else if (a.startsWith("-")) flags.add(a);
+    else pos.push(a);
+  }
+  const yes = flags.has("--yes") || flags.has("-y");
+  if (pos.length < 1) die(usage);
+  const p = pos[0];
+  requireProject(p);
+  const wd = cfgDir(p);
+  if (!wd) die(`unresolvable project '${p}'`);
+  const lbl = labelOf(p);
+  if (!lbl) die(`cannot resolve docker label for '${p}'`);
+
+  const dir = (() => {
+    try {
+      return resolveBackupDir({ configured: readBackupDir(), projectRoot: rootOf(p) });
+    } catch {
+      return null;
+    }
+  })();
+
+  // Resolve the source dump BEFORE the safety pre-dump, so --latest never picks
+  // the snapshot we're about to take.
+  let file: string;
+  if (flags.has("--latest")) {
+    if (!dir || !isDir(dir)) die(`no backup dir for '${p}' to search — pass an explicit file`);
+    const entries = [...Deno.readDirSync(dir)].filter((e) => e.isFile).map((e) => e.name);
+    const pick = latestBackup(entries, p);
+    if (!pick) die(`no backups for '${p}' found in ${dir}`);
+    file = join(dir, pick);
+  } else {
+    if (pos.length < 2) die(usage);
+    file = expandTilde(pos[1]);
+  }
+  if (!isFile(file)) die(`backup file not found: ${file}`);
+
+  // The stack must be up (restore writes into the live DB).
+  if (!(await runningLabels()).includes(lbl)) {
+    die(`'${p}' isn't running — start it first: supa up ${p}`);
+  }
+  const container = await dbContainer(lbl);
+  if (!container) die(`could not find the db container for '${p}' — is it up?`);
+
+  console.error(`⚠ restore '${p}' — loads`);
+  console.error(`  ${file}`);
+  console.error(
+    `  into the LIVE '${dbName}' DB (container ${container}); current data is overwritten.`,
+  );
+  if (!yes) {
+    const ans = await readLine(`  type '${p}' to confirm: `);
+    if (ans !== p) die("aborted (confirmation did not match)");
+  }
+
+  // Safety pre-dump so a bad restore is always recoverable.
+  let safety = "(none — no backup dir resolved)";
+  if (dir) {
+    try {
+      Deno.mkdirSync(dir, { recursive: true });
+    } catch { /* exists */ }
+    const pre = join(dir, `${p}_pre-restore_${tsStamp(new Date())}.sql`);
+    console.log(`>> safety pre-dump → ${pre}`);
+    try {
+      await performBackup(p, wd, "full", false, pre);
+      safety = pre;
+    } catch (e) {
+      die(
+        `safety pre-dump failed — aborting before any change: ${
+          e instanceof Error ? e.message : e
+        }`,
+      );
+    }
+  }
+
+  const hooks = readHooks(wd);
+  if (hooks.restorePre) await runHook("restore.pre", hooks.restorePre, wd);
+
+  // Pipe the dump into the container's psql. --single-transaction (default) makes
+  // it atomic — any error rolls the whole restore back, leaving the DB unchanged;
+  // ON_ERROR_STOP=1 fails loudly instead of half-applying.
+  const psql = [
+    "exec",
+    "-i",
+    container,
+    "psql",
+    "-U",
+    "postgres",
+    "-d",
+    dbName,
+    "-v",
+    "ON_ERROR_STOP=1",
+  ];
+  const tx = !flags.has("--no-tx");
+  if (tx) psql.push("--single-transaction");
+  console.log(`== restoring ${p} from ${file}`);
+  const code = await runStdinFile("docker", psql, file);
+  if (code !== 0) {
+    die(
+      `restore failed (psql exit ${code}).${
+        tx ? " The DB was rolled back (single transaction)." : ""
+      }\n` +
+        `  pre-restore snapshot: ${safety}\n` +
+        `  note: a full dump conflicts with an existing schema — restore into a fresh/reset\n` +
+        `  stack, or use a --data-only dump. See docs/SUPA.md.`,
+    );
+  }
+  if (hooks.restorePost) await runHook("restore.post", hooks.restorePost, wd);
+  console.log(`✓ restored ${p} from ${file}`);
 }
 export function cmdHelp(): void {
   const defHome = OS === "windows" ? "%APPDATA%\\supa" : "~/.config/supa";
@@ -664,6 +811,7 @@ export function cmdHelp(): void {
   supa destroy <p> [--yes]      stop + DELETE a stack's data (containers + volumes)
   supa rotate <p> [--yes]       new JWT signing key + restart (invalidates tokens)
   supa backup <p> [--data-only] [--out <dir>]  dump the DB → <name>_<ts>.sql
+  supa restore <p> <file>|--latest [--yes]     load a dump into the live DB (atomic)
   supa status                   raw docker view, grouped by project
   supa stats                    CPU/MEM per container + per-stack & total RAM
   supa logs <p> [svc] [-f]      tail a stack's container logs

@@ -151,3 +151,22 @@ Deno.test("backup on a down stack exits with a start-it-first hint", async () =>
     }
   });
 });
+
+Deno.test("restore with a missing file exits before touching docker", async () => {
+  await withHome(async (home) => {
+    const proj = await Deno.makeTempDir({ prefix: "supa-proj-" });
+    try {
+      await Deno.mkdir(`${proj}/supabase`, { recursive: true });
+      await Deno.writeTextFile(
+        `${proj}/supabase/config.toml`,
+        `project_id = "supa-test-absent"\n[api]\nport = 54391\n[db]\nport = 54392\n`,
+      );
+      await Deno.writeTextFile(`${home}/supa.registry`, `demo|${proj}\n`);
+      const r = await runSupa(["restore", "demo", `${proj}/nope.sql`], home);
+      ok(r.code === 1, `expected exit 1, got ${r.code}`);
+      ok(/backup file not found/.test(r.err), r.err);
+    } finally {
+      await Deno.remove(proj, { recursive: true });
+    }
+  });
+});

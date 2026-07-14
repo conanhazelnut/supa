@@ -56,6 +56,44 @@ export async function runInherit(cmd: string, args: string[]): Promise<number> {
     return 127;
   }
 }
+// Run a command, streaming a file into its stdin (inherit stdout/stderr).
+// Used to feed a .sql dump into the db container's psql. 127 == spawn failure.
+export async function runStdinFile(cmd: string, args: string[], file: string): Promise<number> {
+  let child: Deno.ChildProcess;
+  try {
+    child = new Deno.Command(cmd, {
+      args,
+      stdin: "piped",
+      stdout: "inherit",
+      stderr: "inherit",
+    }).spawn();
+  } catch {
+    return 127;
+  }
+  try {
+    const f = await Deno.open(file, { read: true });
+    await f.readable.pipeTo(child.stdin); // closes stdin (EOF) when the file ends
+  } catch {
+    // psql may close stdin early on error; ignore the broken pipe and let the
+    // exit code below report the failure.
+  }
+  const { code } = await child.status;
+  return code;
+}
+// Find the Postgres container for a stack (service container `supabase_db_<label>`).
+export async function dbContainer(label: string): Promise<string | null> {
+  const { code, out } = await runCapture("docker", [
+    "ps",
+    "--filter",
+    `label=com.supabase.cli.project=${label}`,
+    "--format",
+    "{{.Names}}",
+  ]);
+  if (code !== 0) return null;
+  const found = out.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+  return found.find((n) => n === `supabase_db_${label}`) ??
+    found.find((n) => n.includes("_db_")) ?? null;
+}
 
 export async function runningLabels(): Promise<string[]> {
   const { code, out } = await runCapture("docker", [

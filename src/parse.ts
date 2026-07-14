@@ -184,6 +184,54 @@ export function resolveBackupDir(
   throw new Error("cannot resolve a backup directory");
 }
 
+// Newest backup for `name` from a list of filenames. Sorts by the trailing
+// `YYYY-MM-DD_HHMM` stamp (NOT the whole filename — a `_data_` type suffix would
+// otherwise sort a data dump after a same-day full one), and excludes safety
+// pre-restore dumps so `--latest` never picks the snapshot a restore just took.
+export function latestBackup(files: string[], name: string): string | null {
+  const stampOf = (f: string): string => f.match(/(\d{4}-\d{2}-\d{2}_\d{4})\.sql$/)?.[1] ?? "";
+  const mine = files
+    .filter((f) =>
+      f.startsWith(`${name}_`) && f.endsWith(".sql") && !f.includes("_pre-restore_") &&
+      stampOf(f) !== ""
+    )
+    .sort((a, b) => (stampOf(a) < stampOf(b) ? -1 : stampOf(a) > stampOf(b) ? 1 : 0));
+  return mine.length ? mine[mine.length - 1] : null;
+}
+
+// ---------- restore hooks (per-project supa.hooks, pure parse) -----------------
+
+// A project's optional restore/backup hooks. Values are shell commands (run in
+// the project dir) — a project declares its own migrate/seed, supa owns the flow.
+export interface Hooks {
+  restorePre?: string;
+  restorePost?: string;
+  backupType?: BackupType;
+}
+export function parseHooks(text: string): Hooks {
+  const h: Hooks = {};
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (line === "" || line.startsWith("#")) continue;
+    const m = line.match(/^([a-z.]+)\s*=\s*(.*)$/);
+    if (!m) continue;
+    let val = m[2].trim();
+    if (
+      val.length >= 2 &&
+      ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'")))
+    ) {
+      val = val.slice(1, -1);
+    }
+    if (val === "") continue;
+    if (m[1] === "restore.pre") h.restorePre = val;
+    else if (m[1] === "restore.post") h.restorePost = val;
+    else if (m[1] === "backup.type" && ["full", "data", "schema", "roles"].includes(val)) {
+      h.backupType = val as BackupType;
+    }
+  }
+  return h;
+}
+
 // Ensure config.toml has an active signing_keys_path; return updated text + path.
 export function ensureSigningKeysPath(text: string): { text: string; relPath: string } {
   const active = text.match(/^\s*signing_keys_path\s*=\s*"([^"]+)"/m);

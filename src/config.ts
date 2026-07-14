@@ -3,7 +3,9 @@
 // label + ports + free slot from its supabase/config.toml.
 import { die, expandTilde, home, isDir, isFile, join, OS, parentDir } from "./util.ts";
 import {
+  type Hooks,
   parseEnvMap,
+  parseHooks,
   parseLabel,
   parsePort,
   parseRegistry,
@@ -11,7 +13,7 @@ import {
   rebandText,
 } from "./parse.ts";
 
-export type { Project };
+export type { Hooks, Project };
 
 // ---------- config-dir resolution ---------------------------------------------
 export function configDir(): string {
@@ -163,6 +165,10 @@ export function readEnvMap(cfgDirPath: string): Array<{ app: string; native: str
   const mapPath = join(cfgDirPath, "supa.env.map");
   if (!isFile(mapPath)) return [];
   return parseEnvMap(Deno.readTextFileSync(mapPath));
+}
+export function readHooks(cfgDirPath: string): Hooks {
+  const p = join(cfgDirPath, "supa.hooks");
+  return isFile(p) ? parseHooks(Deno.readTextFileSync(p)) : {};
 }
 export function rebandConfig(f: string, slot: string): string[] {
   const src = Deno.readTextFileSync(f);

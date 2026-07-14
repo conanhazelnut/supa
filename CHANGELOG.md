@@ -14,6 +14,12 @@ All notable changes to supa are documented here. This project adheres to
   rename); the stack must be up. Restore (`supa restore`) is planned next.
 - `supa config backup-dir <path>` (and `SUPA_BACKUP_DIR`) — set where dumps land.
   Resolution: `--out` → `backup_dir` → `<project-root>/backups/`.
+- `supa restore <p> <file>|--latest` — load a dump into the live DB via the db
+  container's `psql`. Type-name confirm (`--yes` to skip), a full **safety
+  pre-dump** first, and a **single transaction** so any error rolls back and leaves
+  the DB unchanged (`--no-tx` to opt out; `--db <name>` for a non-default database).
+- Per-project **`supa.hooks`** — `restore.pre` / `restore.post` (run around a
+  restore) and `backup.type` (default type for `supa backup`).
 
 ## [0.1.0] — 2026-07-13
 

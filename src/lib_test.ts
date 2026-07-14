@@ -13,8 +13,10 @@ import {
   applyEnvMap,
   backupFileName,
   ensureSigningKeysPath,
+  latestBackup,
   mergeDotenv,
   parseEnvMap,
+  parseHooks,
   parseLabel,
   parsePort,
   parseRegistry,
@@ -267,4 +269,35 @@ Deno.test("resolveBackupDir throws when nothing resolves", () => {
     threw = true;
   }
   ok(threw, "should throw when no dir can be resolved");
+});
+
+// ---------- restore: latest-file selection + hooks ----------------------------
+Deno.test("latestBackup picks the newest and ignores pre-restore + other projects", () => {
+  const files = [
+    "larp_2026-07-10_0900.sql",
+    "larp_2026-07-14_1200.sql", // newest for larp
+    "larp_data_2026-07-12_0800.sql",
+    "larp_pre-restore_2026-07-20_0000.sql", // must be ignored
+    "pams_2026-07-19_0000.sql", // different project
+    "notes.txt",
+  ];
+  eq(latestBackup(files, "larp"), "larp_2026-07-14_1200.sql");
+  eq(latestBackup(files, "pams"), "pams_2026-07-19_0000.sql");
+  eq(latestBackup(files, "nope"), null);
+});
+Deno.test("latestBackup returns null when only a pre-restore dump exists", () => {
+  eq(latestBackup(["larp_pre-restore_2026-07-20_0000.sql"], "larp"), null);
+});
+Deno.test("parseHooks reads restore hooks + backup type, skips junk", () => {
+  const h = parseHooks(
+    `# hooks\nrestore.pre = supabase db reset\nrestore.post = "deno task db:migrate"\n` +
+      `backup.type = data\nunknown.key = x\nbackup.type = bogus\n`,
+  );
+  eq(h.restorePre, "supabase db reset");
+  eq(h.restorePost, "deno task db:migrate"); // surrounding quotes stripped
+  // last valid backup.type wins; "bogus" is rejected so "data" stands
+  eq(h.backupType, "data");
+});
+Deno.test("parseHooks returns empty object for blank/garbage input", () => {
+  eq(parseHooks("# just a comment\n\n"), {});
 });

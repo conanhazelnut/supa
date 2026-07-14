@@ -33,7 +33,7 @@ Legend: ✅ done · 🟡 planned · 🔬 only if a real need shows up
 | **port assignment**                         | ✅ auto                 | ✅ `ports` re-band + `add --init` auto-assign                          |
 | **alert rules / thresholds**                | ✅                      | ✅ `stats` per-stack/total RAM vs `ram_budget` + suggests `max_active` |
 | **credential rotation**                     | ✅                      | ✅ `rotate` (new JWT signing key + restart)                            |
-| **backup / restore / upgrade**              | ✅                      | 🟡 `backup` ✅ · `restore` / `upgrade` planned (M4)                    |
+| **backup / restore / upgrade**              | ✅                      | 🟡 `backup` ✅ · `restore` ✅ · hooks ✅ · `upgrade` planned           |
 | **web dashboard / GUI**                     | ✅ (React)              | 🔬 a **TUI** over web, only if needed                                  |
 | **many self-hosted instances (compose)**    | ✅ core model           | 🔬 separate track — different philosophy                               |
 
@@ -81,22 +81,23 @@ db container's `psql` — never reimplementing them. Destructive steps reuse the
   `--roles-only`, plus `--use-copy` and `--out`. Output dir resolves
   `--out` → `backup_dir` config → `<project-root>/backups/`. Atomic (temp →
   rename) so an interrupted dump never leaves a usable-looking file.
-- **`restore <p> [<file>|--latest]`** (🟡) — the Supabase CLI has **no** restore,
+- **`restore <p> [<file>|--latest]`** (✅) — the Supabase CLI has **no** restore,
   so pipe the dump into the db container: `docker exec -i supabase_db_<label> psql
-  -v ON_ERROR_STOP=1` (no host `psql` dependency; cross-platform). Typed-name
-  confirm; takes a **safety pre-dump** before overwriting, so a mis-restore is
-  always recoverable.
-- **hooks** (🟡, lands with restore) — an optional per-project `supa.hooks`
-  (`restore.post = "deno task db:migrate"`, `backup.type = "full"`): supa owns the
-  flow, each project declares its own migrate/seed steps. One flow, N projects,
-  zero hardcoding.
+  -v ON_ERROR_STOP=1 --single-transaction` (no host `psql`; cross-platform; atomic
+  — any error rolls back, DB unchanged). Typed-name confirm + a full **safety
+  pre-dump** first. `--latest`, `--db`, `--no-tx`.
+- **hooks** (✅) — an optional per-project `supa.hooks` (`restore.pre`,
+  `restore.post`, `backup.type`): supa owns the flow, each project declares its own
+  migrate/seed steps. One flow, N projects, zero hardcoding.
 - **`upgrade <p> --to <ver>`** (🟡) — automate the Postgres major-version dance
   (backup → stop → bump `major_version` → drop volumes → start → hooks → restore).
   The payoff of owning backup + restore.
 
-Delivery: **Phase 1 `backup`** (done) → **Phase 2 `restore` + hooks** → Phase 3
-`upgrade`. Spike to retire before Phase 2: confirm `docker exec … psql` round-trips
-a full dump cleanly (roles-already-exist idempotency) against a scratch DB.
+Delivery: **Phase 1 `backup`** ✅ → **Phase 2 `restore` + hooks** ✅ → **Phase 3
+`upgrade`** (next). The pre-Phase-2 spike is retired: `docker exec … psql`
+round-trips fine, and — key finding — a Supabase dump **omits managed
+schemas/roles**, so restore targets a Supabase-initialised DB (data-only into a
+reset/migrated schema is the clean path; that's what the hooks automate).
 
 ### M5 — Distribution & scale (🟡 / 🔬)
 

@@ -68,30 +68,31 @@ path). `supa config` prints exactly what it resolved.
 Same binary, same commands on every OS (`supa` on macOS/Linux, `supa.exe` /
 `supa` on Windows). Aliases in parentheses.
 
-| Command                           | Does                                                            |
-| --------------------------------- | --------------------------------------------------------------- |
-| `supa ls` (`list`)                | list projects, docker label, live ports, up/down status         |
-| `supa up <p...>` (`start`)        | start stack(s) — refuses past the `max_active` limit            |
-| `supa down <p...>` (`stop`)       | stop one or more stacks (`--all` for every registered)          |
-| `supa restart <p...>`             | stop + start a stack                                            |
-| `supa switch <p>` (`only`)        | stop all others, run only `<p>`                                 |
-| `supa destroy <p> [--yes]`        | stop + **DELETE** a stack's data (containers + volumes)         |
-| `supa rotate <p> [--yes]`         | new JWT signing key + restart (invalidates tokens)              |
-| `supa backup <p> [flags]`         | dump the local DB to a timestamped `.sql` (see below)           |
-| `supa status` (`ps`)              | raw docker view, grouped by project                             |
-| `supa stats`                      | CPU/MEM per container + per-stack & total RAM (vs `ram_budget`) |
-| `supa logs <p> [svc] [-f]`        | tail a stack's container logs (no `svc` → list services)        |
-| `supa env <p> [--write [f]]`      | print keys/URLs, or merge them into a `.env` file               |
-| `supa add <name> <path> [--init]` | register a project (`--init`: `supabase init` + assign ports)   |
-| `supa rm <name>`                  | unregister a project                                            |
-| `supa ports <name> [slot]`        | re-band that project's `543XX` ports to a free slot             |
-| `supa doctor`                     | preflight: docker, CLI, registry, ports, config                 |
-| `supa config`                     | show `max_active`, `ram_budget` + resolved paths                |
-| `supa config max-active <n>`      | set how many stacks may run at once (persists)                  |
-| `supa config ram-budget <gb>`     | warn in `stats` when total RAM exceeds this                     |
-| `supa config backup-dir <path>`   | where `supa backup` writes dumps (default `<project>/backups/`) |
-| `supa version`                    | print the supa version (`--version` / `-V` too)                 |
-| `supa help`                       | usage                                                           |
+| Command                             | Does                                                            |
+| ----------------------------------- | --------------------------------------------------------------- |
+| `supa ls` (`list`)                  | list projects, docker label, live ports, up/down status         |
+| `supa up <p...>` (`start`)          | start stack(s) — refuses past the `max_active` limit            |
+| `supa down <p...>` (`stop`)         | stop one or more stacks (`--all` for every registered)          |
+| `supa restart <p...>`               | stop + start a stack                                            |
+| `supa switch <p>` (`only`)          | stop all others, run only `<p>`                                 |
+| `supa destroy <p> [--yes]`          | stop + **DELETE** a stack's data (containers + volumes)         |
+| `supa rotate <p> [--yes]`           | new JWT signing key + restart (invalidates tokens)              |
+| `supa backup <p> [flags]`           | dump the local DB to a timestamped `.sql` (see below)           |
+| `supa restore <p> <file>\|--latest` | load a dump into the live DB — atomic, with a safety pre-dump   |
+| `supa status` (`ps`)                | raw docker view, grouped by project                             |
+| `supa stats`                        | CPU/MEM per container + per-stack & total RAM (vs `ram_budget`) |
+| `supa logs <p> [svc] [-f]`          | tail a stack's container logs (no `svc` → list services)        |
+| `supa env <p> [--write [f]]`        | print keys/URLs, or merge them into a `.env` file               |
+| `supa add <name> <path> [--init]`   | register a project (`--init`: `supabase init` + assign ports)   |
+| `supa rm <name>`                    | unregister a project                                            |
+| `supa ports <name> [slot]`          | re-band that project's `543XX` ports to a free slot             |
+| `supa doctor`                       | preflight: docker, CLI, registry, ports, config                 |
+| `supa config`                       | show `max_active`, `ram_budget` + resolved paths                |
+| `supa config max-active <n>`        | set how many stacks may run at once (persists)                  |
+| `supa config ram-budget <gb>`       | warn in `stats` when total RAM exceeds this                     |
+| `supa config backup-dir <path>`     | where `supa backup` writes dumps (default `<project>/backups/`) |
+| `supa version`                      | print the supa version (`--version` / `-V` too)                 |
+| `supa help`                         | usage                                                           |
 
 **Notes on the destructive / mutating commands:**
 
@@ -132,8 +133,34 @@ Same binary, same commands on every OS (`supa` on macOS/Linux, `supa.exe` /
   `--out <dir>` (this run only). Output dir resolves **`--out` → `backup_dir`
   config → `<project-root>/backups/`**. Writes atomically (temp → rename), so an
   interrupted dump never leaves a usable-looking file. **Gitignore your backups
-  dir** — dumps contain real data. Restore is coming (`supa restore`); for now a
-  full dump restores with `psql < file.sql`.
+  dir** — dumps contain real data.
+- **`restore`** loads a dump into the stack's **live** DB (must be up) by piping it
+  into the db container's `psql` — no host `psql` needed. Give it a file or
+  `--latest` (newest dump in the backup dir, ignoring pre-restore snapshots).
+  Safety model, same spirit as `destroy`: it **type-name confirms** (`--yes` to
+  skip), takes a **full safety pre-dump first** (`<name>_pre-restore_…`), and runs
+  inside a **single transaction** — any error rolls the whole thing back, leaving
+  the DB unchanged (`ON_ERROR_STOP`; `--no-tx` to opt out). `--db <name>` targets a
+  non-default database. **Target state matters:** a Supabase dump omits the managed
+  schemas/roles, so it must restore into a Supabase-initialised DB — a **data-only**
+  dump into a migrated (freshly `reset`/`start`ed) schema is the clean path; a full
+  dump conflicts with an existing schema. Automate the prep with hooks ↓.
+
+### Per-project hooks (`supa.hooks`)
+
+Drop a `supa.hooks` next to `config.toml` (in the same dir as `supa.env.map`) to let
+a project declare its own restore steps — supa owns the flow, the project owns the
+specifics:
+
+```
+# runs before / after `supa restore` (in the project dir, via your shell)
+restore.pre  = supabase db reset      # get a clean, migrated schema first
+restore.post = deno task db:migrate   # re-apply migrations / seed after data loads
+backup.type  = full                   # default type for `supa backup` (full|data|schema|roles)
+```
+
+Hooks are the one place supa runs a shell command (they're your commands, like a
+Makefile target). A failing hook aborts the operation.
 
 ### Setting the concurrency limit
 
