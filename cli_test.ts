@@ -192,3 +192,28 @@ Deno.test("upgrade --dry-run prints the plan and changes nothing", async () => {
     }
   });
 });
+
+Deno.test("upgrade to a lower version is blocked unless --allow-downgrade", async () => {
+  await withHome(async (home) => {
+    const proj = await Deno.makeTempDir({ prefix: "supa-proj-" });
+    try {
+      await Deno.mkdir(`${proj}/supabase`, { recursive: true });
+      await Deno.writeTextFile(
+        `${proj}/supabase/config.toml`,
+        `project_id = "demo"\n[db]\nport = 54392\nmajor_version = 17\n`,
+      );
+      await Deno.writeTextFile(`${home}/supa.registry`, `demo|${proj}\n`);
+      const blocked = await runSupa(["upgrade", "demo", "--to", "15", "--dry-run"], home);
+      ok(blocked.code === 1, `expected exit 1, got ${blocked.code}`);
+      ok(/downgrade/.test(blocked.err), blocked.err);
+      const allowed = await runSupa(
+        ["upgrade", "demo", "--to", "15", "--allow-downgrade", "--dry-run"],
+        home,
+      );
+      ok(allowed.code === 0, allowed.err);
+      ok(/Postgres 17 → 15/.test(allowed.out), allowed.out);
+    } finally {
+      await Deno.remove(proj, { recursive: true });
+    }
+  });
+});

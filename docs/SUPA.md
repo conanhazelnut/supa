@@ -157,6 +157,20 @@ Same binary, same commands on every OS (`supa` on macOS/Linux, `supa.exe` /
   `deno task db:migrate`). Only the DB volume is dropped; a storage volume, if any,
   is left intact.
 
+  **No downgrade — roll back instead.** Postgres has no supported major-version
+  downgrade (a newer dump may not load into an older server), so `upgrade` refuses a
+  lower `--to` unless you pass `--allow-downgrade`. To undo a bad upgrade, **roll
+  back**: the pre-upgrade snapshot was dumped on the _old_ version, so restoring it
+  onto that version is safe. After an upgrade `<old>` → `<new>` you want to reverse:
+
+  ```sh
+  supa down <p>
+  mv <config.toml>.bak <config.toml>              # major_version back to <old>
+  docker volume rm supabase_db_<label>            # drop the <new> volume
+  supa up <p>                                     # fresh <old> volume; migrations run
+  supa restore <p> <name>_upgrade-<old>-to-<new>_<ts>.sql   # data was dumped on <old>
+  ```
+
 ### Per-project hooks (`supa.hooks`)
 
 Drop a `supa.hooks` next to `config.toml` (in the same dir as `supa.env.map`) to let

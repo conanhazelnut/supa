@@ -831,6 +831,18 @@ export async function cmdUpgrade(rest: string[]): Promise<void> {
   const current = parseMajorVersion(cfgText);
   if (current === null) die(`no [db] major_version in ${f} — nothing to upgrade`);
   if (current === to) die(`'${p}' is already on Postgres ${to}`);
+  // A lower target is a downgrade — Postgres has no supported downgrade, and a dump
+  // from the newer version may not load into the older one. Rolling back a bad
+  // upgrade (restore the pre-upgrade snapshot onto the old version) is the safe path.
+  const isDowngrade = Number(to) < Number(current);
+  if (isDowngrade && !flags.has("--allow-downgrade")) {
+    die(
+      `--to ${to} is LOWER than the current ${current} — that's a downgrade, which Postgres\n` +
+        `  does not support (a ${current} dump may not load into ${to}). To undo a bad upgrade,\n` +
+        `  roll back instead: restore the pre-upgrade snapshot onto the old version — see\n` +
+        `  docs/SUPA.md. If you truly mean to downgrade, re-run with --allow-downgrade.`,
+    );
+  }
 
   let dir: string;
   try {
@@ -854,6 +866,11 @@ export async function cmdUpgrade(rest: string[]): Promise<void> {
   }
 
   console.error(`⚠ this DROPS the '${p}' DB volume and rebuilds it on Postgres ${to}.`);
+  if (isDowngrade) {
+    console.error(
+      `  ⚠ DOWNGRADE ${current} → ${to}: a ${current} dump may not load into ${to} (unsupported by Postgres).`,
+    );
+  }
   console.error(`  Your data is snapshotted first, but this is a major, destructive operation.`);
   if (!(flags.has("--yes") || flags.has("-y"))) {
     const ans = await readLine(`  type '${p}' to confirm: `);

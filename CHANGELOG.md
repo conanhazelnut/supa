@@ -23,7 +23,9 @@ All notable changes to supa are documented here. This project adheres to
 - `supa upgrade <p> --to <ver>` — automated Postgres major-version migration:
   data-only snapshot → stop → bump `[db] major_version` (+ `.bak`) → drop the DB
   volume → start fresh → restore the snapshot (+ hooks). Type-name confirm,
-  `--dry-run` to preview; the snapshot is kept for recovery.
+  `--dry-run` to preview; the snapshot is kept for recovery. Refuses a lower `--to`
+  (a downgrade — unsupported by Postgres) unless `--allow-downgrade`; roll back a
+  bad upgrade instead (see SUPA.md).
 
 ## [0.1.0] — 2026-07-13
 
