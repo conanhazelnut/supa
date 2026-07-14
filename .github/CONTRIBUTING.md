@@ -24,14 +24,18 @@ it that way are very welcome.
 You need [Deno](https://deno.com). Then:
 
 ```sh
+deno task hooks         # one-time: install the pre-push gate (core.hooksPath)
 deno task ok            # fmt --check + lint + type-check + test (run before pushing)
 deno task test          # tests only
 deno task dev ls        # run supa without compiling
 deno task build         # compile local binaries into dist/
 ```
 
-CI runs the same `deno fmt --check`, `deno lint`, `deno check`, `deno test`, and
-`shellcheck` on every push and PR — keep them green.
+**The gate is a local pre-push hook** (`.githooks/pre-push`): `deno task hooks`
+installs it once, then every `git push` runs `deno task ok` + `shellcheck` and
+blocks if anything fails. GitHub Actions CI (`.github/workflows/ci.yml`) is
+**dormant until the repo is published** — re-enabled there by uncommenting the
+push/PR triggers.
 
 ## Pull requests
 

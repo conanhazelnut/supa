@@ -1,0 +1,21 @@
+#!/usr/bin/env sh
+# supa's "internal CI" — runs the same checks GitHub CI would, locally, before a
+# push. GitHub Actions stays dormant until the repo is published (see
+# .github/workflows/ci.yml); this hook is the gate in the meantime.
+#
+# Tracked in-repo + activated per clone with:  git config core.hooksPath .githooks
+# (or `deno task hooks`). Works on macOS/Linux and Windows git (bundled sh).
+set -e
+cd "$(git rev-parse --show-toplevel)"
+
+echo "▶ pre-push: deno task ok  (fmt · lint · check · test)"
+deno task ok
+
+if command -v shellcheck >/dev/null 2>&1; then
+  echo "▶ pre-push: shellcheck"
+  shellcheck build.sh install.sh
+else
+  echo "  (shellcheck not installed — skipping shell lint)"
+fi
+
+echo "✓ pre-push checks passed"

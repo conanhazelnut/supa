@@ -1,9 +1,13 @@
 name: ci
 
+# Dormant during the private/internal phase — the local pre-push hook
+# (`.githooks/pre-push`, run `deno task hooks` to activate) is the gate for now.
+# On publish, re-enable automatic runs by uncommenting the triggers below.
 on:
-  push:
-    branches: [main]
-  pull_request:
+  # push:
+  #   branches: [main]
+  # pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read

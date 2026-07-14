@@ -8,6 +8,7 @@
     "fmt": "deno fmt",
     "test": "deno test -A",
     "ok": "deno fmt --check && deno lint && deno check main.ts cli_test.ts src/*.ts && deno test -A",
+    "hooks": "git config core.hooksPath .githooks",
     "build": "./build.sh",
     "build:win": "./build.sh windows"
   },
