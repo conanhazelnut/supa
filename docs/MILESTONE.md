@@ -5,12 +5,11 @@ Feature backlog, largely inspired by **[osobh/multibase](https://github.com/osob
 
 ## Guiding principle — stay a thin CLI
 
-Multibase's reach is also its weight: React dashboard + Node backend + Python CLI
-
-- its own Docker Compose. supa's value is the opposite — a single binary that
-  **wraps the official Supabase CLI**. Adopt Multibase's _capabilities_ without its
-  _bulk_: prefer CLI/TUI over a web app, derive-don't-store, and lean on `supabase`
-- `docker` instead of reimplementing them.
+Multibase's reach is also its weight: a React dashboard, a Node backend, a Python
+CLI, and its own Docker Compose. supa's value is the opposite — a single binary
+that **wraps the official Supabase CLI**. Adopt Multibase's _capabilities_ without
+its _bulk_: prefer CLI/TUI over a web app, derive-don't-store, and lean on
+`supabase` + `docker` instead of reimplementing them.
 
 Legend: ✅ done · 🟡 planned · 🔬 only if a real need shows up
 
@@ -34,6 +33,7 @@ Legend: ✅ done · 🟡 planned · 🔬 only if a real need shows up
 | **port assignment**                         | ✅ auto                 | ✅ `ports` re-band + `add --init` auto-assign                          |
 | **alert rules / thresholds**                | ✅                      | ✅ `stats` per-stack/total RAM vs `ram_budget` + suggests `max_active` |
 | **credential rotation**                     | ✅                      | ✅ `rotate` (new JWT signing key + restart)                            |
+| **backup / restore / upgrade**              | ✅                      | 🟡 `backup` ✅ · `restore` / `upgrade` planned (M4)                    |
 | **web dashboard / GUI**                     | ✅ (React)              | 🔬 a **TUI** over web, only if needed                                  |
 | **many self-hosted instances (compose)**    | ✅ core model           | 🔬 separate track — different philosophy                               |
 
@@ -50,8 +50,7 @@ configurable `max_active`, cross-platform binaries.
 
 `restart` · `destroy` (typed confirm + `--yes`, deletes volumes) · `logs` ·
 `stats` · `doctor` · `add`/`rm` · `ports` (re-band) · `env --write` (dotenv merge
-
-- secret masking). All shipped and tested (fake-shim + real smoke).
+plus secret masking). All shipped and tested (fake-shim + real smoke).
 
 ### M3 — Credentials, ports, resource budget (✅ done)
 
@@ -70,7 +69,36 @@ configurable `max_active`, cross-platform binaries.
   (`rotate` is verified with the real CLI on a throwaway project; its restart
   path is the same proven `up`/`down` code.)
 
-### M4 — Distribution & scale (🟡 / 🔬)
+### M4 — Data management (backup / restore / upgrade)
+
+supa owns the local data lifecycle by **orchestrating** `supabase db dump` + the
+db container's `psql` — never reimplementing them. Destructive steps reuse the
+`destroy` safety model (typed-name confirm + `--yes`).
+
+- **`backup <p>`** (✅) — `supabase db dump --local` (stack must be up). Default is
+  a **full** snapshot: roles + schema + data concatenated in restore order into
+  `<name>_<YYYY-MM-DD_HHMM>.sql`. Part flags `--data-only` / `--schema-only` /
+  `--roles-only`, plus `--use-copy` and `--out`. Output dir resolves
+  `--out` → `backup_dir` config → `<project-root>/backups/`. Atomic (temp →
+  rename) so an interrupted dump never leaves a usable-looking file.
+- **`restore <p> [<file>|--latest]`** (🟡) — the Supabase CLI has **no** restore,
+  so pipe the dump into the db container: `docker exec -i supabase_db_<label> psql
+  -v ON_ERROR_STOP=1` (no host `psql` dependency; cross-platform). Typed-name
+  confirm; takes a **safety pre-dump** before overwriting, so a mis-restore is
+  always recoverable.
+- **hooks** (🟡, lands with restore) — an optional per-project `supa.hooks`
+  (`restore.post = "deno task db:migrate"`, `backup.type = "full"`): supa owns the
+  flow, each project declares its own migrate/seed steps. One flow, N projects,
+  zero hardcoding.
+- **`upgrade <p> --to <ver>`** (🟡) — automate the Postgres major-version dance
+  (backup → stop → bump `major_version` → drop volumes → start → hooks → restore).
+  The payoff of owning backup + restore.
+
+Delivery: **Phase 1 `backup`** (done) → **Phase 2 `restore` + hooks** → Phase 3
+`upgrade`. Spike to retire before Phase 2: confirm `docker exec … psql` round-trips
+a full dump cleanly (roles-already-exist idempotency) against a scratch DB.
+
+### M5 — Distribution & scale (🟡 / 🔬)
 
 - GitHub Releases for the binaries (instead of copying `dist/supa.exe` by hand).
 - 🔬 Optional TUI dashboard. 🔬 Optional compose-based self-hosted track.

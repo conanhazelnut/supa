@@ -4,6 +4,17 @@ All notable changes to supa are documented here. This project adheres to
 [Semantic Versioning](https://semver.org/) and
 [Keep a Changelog](https://keepachangelog.com/).
 
+## [Unreleased]
+
+### Added
+
+- `supa backup <p>` — dump the local DB to a timestamped `.sql`. Default is a full
+  snapshot (roles + schema + data); `--data-only` / `--schema-only` / `--roles-only`
+  for a single part, plus `--use-copy` and `--out <dir>`. Atomic write (temp →
+  rename); the stack must be up. Restore (`supa restore`) is planned next.
+- `supa config backup-dir <path>` (and `SUPA_BACKUP_DIR`) — set where dumps land.
+  Resolution: `--out` → `backup_dir` → `<project-root>/backups/`.
+
 ## [0.1.0] — 2026-07-13
 
 Initial release.

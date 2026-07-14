@@ -12,7 +12,16 @@ import {
   memToMiB,
   OS,
 } from "./util.ts";
-import { applyEnvMap, ensureSigningKeysPath, mergeDotenv, signingKeyArray } from "./parse.ts";
+import {
+  applyEnvMap,
+  backupFileName,
+  type BackupType,
+  ensureSigningKeysPath,
+  mergeDotenv,
+  resolveBackupDir,
+  signingKeyArray,
+  tsStamp,
+} from "./parse.ts";
 import {
   cfgDir,
   cfgFile,
@@ -22,6 +31,7 @@ import {
   names,
   nextFreeSlot,
   portOf,
+  readBackupDir,
   readEnvMap,
   readMaxActive,
   readRamBudget,
@@ -189,6 +199,7 @@ export function cmdConfig(rest: string[]): void {
     console.log(`  config file: ${cfg}${isFile(cfg) ? "" : "   (none yet)"}`);
     console.log(`  max_active:  ${value === Infinity ? "unlimited" : value}   (from ${source})`);
     console.log(`  ram_budget:  ${budget ? `${budget} GiB` : "(unset)"}`);
+    console.log(`  backup_dir:  ${readBackupDir() ?? "(unset → <project>/backups/)"}`);
     return;
   }
   if (rest[0] === "max-active") {
@@ -209,7 +220,15 @@ export function cmdConfig(rest: string[]): void {
     setConfigKey("ram_budget_gb", raw);
     return;
   }
-  die(`unknown config key '${rest[0]}' (try: supa config [max-active <n> | ram-budget <gb>])`);
+  if (rest[0] === "backup-dir") {
+    if (rest.length !== 2) die("usage: supa config backup-dir <path>");
+    setConfigKey("backup_dir", rest[1].trim());
+    return;
+  }
+  die(
+    `unknown config key '${rest[0]}' ` +
+      `(try: supa config [max-active <n> | ram-budget <gb> | backup-dir <path>])`,
+  );
 }
 export async function cmdLogs(rest: string[]): Promise<void> {
   if (rest.length < 1) die("usage: supa logs <project> [service] [-f]");
@@ -528,6 +547,110 @@ export async function cmdRotate(rest: string[]): Promise<void> {
   }
   console.log(`✓ rotated ${p}`);
 }
+export async function cmdBackup(rest: string[]): Promise<void> {
+  const usage =
+    "usage: supa backup <project> [--data-only|--schema-only|--roles-only] [--out <dir>] [--use-copy]";
+  const flags = new Set<string>();
+  const pos: string[] = [];
+  let out: string | undefined;
+  for (let i = 0; i < rest.length; i++) {
+    const a = rest[i];
+    if (a === "--out") out = rest[++i];
+    else if (a.startsWith("-")) flags.add(a);
+    else pos.push(a);
+  }
+  if (pos.length !== 1) die(usage);
+  const p = pos[0];
+  requireProject(p);
+  const wd = cfgDir(p);
+  if (!wd) die(`unresolvable project '${p}'`);
+
+  // Exactly one part-selector, or none (= full: roles + schema + data).
+  const picked =
+    ([["--data-only", "data"], ["--schema-only", "schema"], ["--roles-only", "roles"]] as const)
+      .filter(([f]) => flags.has(f));
+  if (picked.length > 1) die("choose only one of --data-only / --schema-only / --roles-only");
+  const type: BackupType = picked.length ? picked[0][1] : "full";
+  const useCopy = flags.has("--use-copy");
+
+  // A dump reads the live DB, so the stack has to be up.
+  const lbl = labelOf(p);
+  if (!lbl || !(await runningLabels()).includes(lbl)) {
+    die(`'${p}' isn't running — start it first: supa up ${p}`);
+  }
+
+  let dir: string;
+  try {
+    dir = resolveBackupDir({ out, configured: readBackupDir(), projectRoot: rootOf(p) });
+  } catch {
+    die(`could not resolve a backup directory for '${p}' (pass --out <dir>)`);
+  }
+  try {
+    Deno.mkdirSync(dir, { recursive: true });
+  } catch (e) {
+    die(`cannot create backup dir ${dir}: ${e instanceof Error ? e.message : e}`);
+  }
+  const finalPath = join(dir, backupFileName(p, type, tsStamp(new Date())));
+  const partial = `${finalPath}.partial`;
+
+  // Each part → a temp file; concatenate in restore order (roles, schema, data)
+  // and rename atomically so a failed dump never leaves a usable-looking file.
+  const dataArgs = useCopy ? ["--data-only", "--use-copy"] : ["--data-only"];
+  const partsFor: Record<BackupType, Array<{ label: string; args: string[] }>> = {
+    roles: [{ label: "roles", args: ["--role-only"] }],
+    schema: [{ label: "schema", args: [] }],
+    data: [{ label: "data", args: dataArgs }],
+    full: [
+      { label: "roles", args: ["--role-only"] },
+      { label: "schema", args: [] },
+      { label: "data", args: dataArgs },
+    ],
+  };
+  const parts = partsFor[type];
+  console.log(`>> backup ${p} (${type}) → ${finalPath}`);
+
+  const temps: string[] = [];
+  try {
+    const chunks: string[] = [];
+    for (const part of parts) {
+      const tmp = Deno.makeTempFileSync({ prefix: `supa-backup-${p}-`, suffix: ".sql" });
+      temps.push(tmp);
+      const code = await runInherit(
+        supabaseCmd(),
+        ["--workdir", wd, "db", "dump", "--local", ...part.args, "-f", tmp],
+      );
+      if (code === 127) throw new Error(SUPABASE_MISSING);
+      if (code !== 0) {
+        throw new Error(`'supabase db dump' (${part.label}) failed for '${p}' (exit ${code})`);
+      }
+      const body = Deno.readTextFileSync(tmp);
+      chunks.push(parts.length > 1 ? `-- >>> supa backup: ${part.label} <<<\n${body}` : body);
+    }
+    Deno.writeTextFileSync(partial, chunks.join("\n"));
+    Deno.renameSync(partial, finalPath);
+  } catch (e) {
+    for (const t of temps) {
+      try {
+        Deno.removeSync(t);
+      } catch { /* ignore */ }
+    }
+    try {
+      Deno.removeSync(partial);
+    } catch { /* ignore */ }
+    die(e instanceof Error ? e.message : String(e));
+  }
+  for (const t of temps) {
+    try {
+      Deno.removeSync(t);
+    } catch { /* ignore */ }
+  }
+
+  const kib = Deno.statSync(finalPath).size / 1024;
+  const size = kib >= 1024
+    ? `${(kib / 1024).toFixed(1)} MiB`
+    : `${Math.max(1, Math.round(kib))} KiB`;
+  console.log(`✓ backed up ${p} → ${finalPath} (${size})`);
+}
 export function cmdHelp(): void {
   const defHome = OS === "windows" ? "%APPDATA%\\supa" : "~/.config/supa";
   console.log(
@@ -540,6 +663,7 @@ export function cmdHelp(): void {
   supa switch <p>               stop all others, run only <p>
   supa destroy <p> [--yes]      stop + DELETE a stack's data (containers + volumes)
   supa rotate <p> [--yes]       new JWT signing key + restart (invalidates tokens)
+  supa backup <p> [--data-only] [--out <dir>]  dump the DB → <name>_<ts>.sql
   supa status                   raw docker view, grouped by project
   supa stats                    CPU/MEM per container + per-stack & total RAM
   supa logs <p> [svc] [-f]      tail a stack's container logs
@@ -548,7 +672,7 @@ export function cmdHelp(): void {
   supa rm <name>                unregister a project
   supa ports <name> [slot]      re-band that project's 543XX ports to a free slot
   supa doctor                   preflight: docker, CLI, registry, ports, config
-  supa config [max-active <n> | ram-budget <gb>]    show or set limits
+  supa config [max-active <n> | ram-budget <gb> | backup-dir <path>]   show/set
   supa version                  print the supa version
   supa help                     this
 

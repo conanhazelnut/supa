@@ -1,6 +1,6 @@
 // Pure text parsers (registry, config.toml, dotenv, port re-banding, signing key).
 // Everything here is side-effect-free and unit-tested in lib_test.ts.
-import { escapeRegExp, expandTilde } from "./util.ts";
+import { escapeRegExp, expandTilde, join } from "./util.ts";
 
 export interface Project {
   name: string;
@@ -152,6 +152,36 @@ export function signingKeyArray(genOutput: string): string {
   if (parsed === undefined) throw new Error("could not parse signing key JSON");
   const arr = Array.isArray(parsed) ? parsed : [parsed];
   return JSON.stringify(arr, null, 2) + "\n";
+}
+
+// ---------- backup: filename + output-dir resolution (pure) -------------------
+
+// A full backup is roles+schema+data; the others dump a single part.
+export type BackupType = "full" | "data" | "schema" | "roles";
+
+// Local-time stamp `YYYY-MM-DD_HHMM` for backup filenames (sorts chronologically).
+export function tsStamp(d: Date): string {
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}_${p(d.getHours())}${
+    p(d.getMinutes())
+  }`;
+}
+
+// `<name>_<stamp>.sql` for full, `<name>_<type>_<stamp>.sql` for a single part.
+export function backupFileName(name: string, type: BackupType, stamp: string): string {
+  const suffix = type === "full" ? "" : `_${type}`;
+  return `${name}${suffix}_${stamp}.sql`;
+}
+
+// Resolve where dumps go: an explicit --out wins, then the backup_dir config,
+// then `<project-root>/backups/`. Throws if none is available.
+export function resolveBackupDir(
+  opts: { out?: string | null; configured?: string | null; projectRoot?: string | null },
+): string {
+  if (opts.out) return expandTilde(opts.out);
+  if (opts.configured) return expandTilde(opts.configured);
+  if (opts.projectRoot) return join(opts.projectRoot, "backups");
+  throw new Error("cannot resolve a backup directory");
 }
 
 // Ensure config.toml has an active signing_keys_path; return updated text + path.

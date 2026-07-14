@@ -120,3 +120,34 @@ Deno.test("ls derives label + ports from a project's config.toml", async () => {
     }
   });
 });
+
+Deno.test("config backup-dir round-trips through supa.config", async () => {
+  await withHome(async (home) => {
+    await Deno.writeTextFile(`${home}/supa.registry`, "web|/tmp/web\n");
+    const set = await runSupa(["config", "backup-dir", "/tmp/dumps"], home);
+    ok(set.code === 0, set.err);
+    const show = await runSupa(["config"], home);
+    ok(/backup_dir:\s*\/tmp\/dumps/.test(show.out), show.out);
+  });
+});
+
+Deno.test("backup on a down stack exits with a start-it-first hint", async () => {
+  await withHome(async (home) => {
+    const proj = await Deno.makeTempDir({ prefix: "supa-proj-" });
+    try {
+      await Deno.mkdir(`${proj}/supabase`, { recursive: true });
+      // A label no container will ever carry → runningLabels() can't include it,
+      // so the guard fires regardless of whether docker is running here.
+      await Deno.writeTextFile(
+        `${proj}/supabase/config.toml`,
+        `project_id = "supa-test-absent"\n[api]\nport = 54391\n[db]\nport = 54392\n`,
+      );
+      await Deno.writeTextFile(`${home}/supa.registry`, `demo|${proj}\n`);
+      const r = await runSupa(["backup", "demo"], home);
+      ok(r.code === 1, `expected exit 1, got ${r.code}`);
+      ok(/isn't running/.test(r.err), r.err);
+    } finally {
+      await Deno.remove(proj, { recursive: true });
+    }
+  });
+});

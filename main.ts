@@ -14,6 +14,7 @@
 import { die } from "./src/util.ts";
 import {
   cmdAdd,
+  cmdBackup,
   cmdConfig,
   cmdDestroy,
   cmdDoctor,
@@ -61,6 +62,9 @@ async function main(): Promise<void> {
       break;
     case "rotate":
       await cmdRotate(rest);
+      break;
+    case "backup":
+      await cmdBackup(rest);
       break;
     case "status":
     case "ps":

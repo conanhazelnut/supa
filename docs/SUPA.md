@@ -77,6 +77,7 @@ Same binary, same commands on every OS (`supa` on macOS/Linux, `supa.exe` /
 | `supa switch <p>` (`only`)        | stop all others, run only `<p>`                                 |
 | `supa destroy <p> [--yes]`        | stop + **DELETE** a stack's data (containers + volumes)         |
 | `supa rotate <p> [--yes]`         | new JWT signing key + restart (invalidates tokens)              |
+| `supa backup <p> [flags]`         | dump the local DB to a timestamped `.sql` (see below)           |
 | `supa status` (`ps`)              | raw docker view, grouped by project                             |
 | `supa stats`                      | CPU/MEM per container + per-stack & total RAM (vs `ram_budget`) |
 | `supa logs <p> [svc] [-f]`        | tail a stack's container logs (no `svc` → list services)        |
@@ -88,6 +89,7 @@ Same binary, same commands on every OS (`supa` on macOS/Linux, `supa.exe` /
 | `supa config`                     | show `max_active`, `ram_budget` + resolved paths                |
 | `supa config max-active <n>`      | set how many stacks may run at once (persists)                  |
 | `supa config ram-budget <gb>`     | warn in `stats` when total RAM exceeds this                     |
+| `supa config backup-dir <path>`   | where `supa backup` writes dumps (default `<project>/backups/`) |
 | `supa version`                    | print the supa version (`--version` / `-V` too)                 |
 | `supa help`                       | usage                                                           |
 
@@ -122,6 +124,16 @@ Same binary, same commands on every OS (`supa` on macOS/Linux, `supa.exe` /
   The map holds names only — no secrets — so it's safe to commit in the project.
 - **`ports`** rewrites only ports already on the `543XX` scheme, keeping the
   service digit, and writes a `config.toml.bak` first. Run `supa restart` after.
+- **`backup`** dumps the **local** DB via `supabase db dump --local` (the stack
+  must be **up**). Default is a **full** snapshot — roles + schema + data,
+  concatenated in restore order into one `<name>_<YYYY-MM-DD_HHMM>.sql`. Flags:
+  `--data-only` / `--schema-only` / `--roles-only` (one part only; data files are
+  named `<name>_data_…`), `--use-copy` (COPY instead of INSERTs, for large data),
+  `--out <dir>` (this run only). Output dir resolves **`--out` → `backup_dir`
+  config → `<project-root>/backups/`**. Writes atomically (temp → rename), so an
+  interrupted dump never leaves a usable-looking file. **Gitignore your backups
+  dir** — dumps contain real data. Restore is coming (`supa restore`); for now a
+  full dump restores with `psql < file.sql`.
 
 ### Setting the concurrency limit
 

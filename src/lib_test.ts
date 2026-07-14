@@ -11,6 +11,7 @@ import {
 } from "./util.ts";
 import {
   applyEnvMap,
+  backupFileName,
   ensureSigningKeysPath,
   mergeDotenv,
   parseEnvMap,
@@ -18,7 +19,9 @@ import {
   parsePort,
   parseRegistry,
   rebandText,
+  resolveBackupDir,
   signingKeyArray,
+  tsStamp,
 } from "./parse.ts";
 
 function eq<T>(actual: T, expected: T, msg = ""): void {
@@ -237,4 +240,31 @@ Deno.test("signingKeyArray throws on garbage", () => {
     threw = true;
   }
   ok(threw, "should throw on unparseable input");
+});
+
+// ---------- backup: filename + dir resolution ---------------------------------
+Deno.test("tsStamp formats local time as YYYY-MM-DD_HHMM", () => {
+  eq(tsStamp(new Date(2026, 6, 14, 1, 30)), "2026-07-14_0130"); // month is 0-based
+  eq(tsStamp(new Date(2026, 11, 3, 9, 5)), "2026-12-03_0905"); // zero-padding
+});
+Deno.test("backupFileName: full has no type suffix, parts do", () => {
+  eq(backupFileName("larp", "full", "2026-07-14_0130"), "larp_2026-07-14_0130.sql");
+  eq(backupFileName("larp", "data", "2026-07-14_0130"), "larp_data_2026-07-14_0130.sql");
+  eq(backupFileName("pams", "schema", "2026-07-14_0130"), "pams_schema_2026-07-14_0130.sql");
+  eq(backupFileName("pams", "roles", "2026-07-14_0130"), "pams_roles_2026-07-14_0130.sql");
+});
+Deno.test("resolveBackupDir precedence: out > configured > project/backups", () => {
+  eq(resolveBackupDir({ out: "/x", configured: "/y", projectRoot: "/z" }), "/x");
+  eq(resolveBackupDir({ configured: "/y", projectRoot: "/z" }), "/y");
+  eq(resolveBackupDir({ projectRoot: "/z" }), "/z/backups");
+  ok(!resolveBackupDir({ out: "~/b" }).startsWith("~"), "expands a leading ~");
+});
+Deno.test("resolveBackupDir throws when nothing resolves", () => {
+  let threw = false;
+  try {
+    resolveBackupDir({});
+  } catch {
+    threw = true;
+  }
+  ok(threw, "should throw when no dir can be resolved");
 });

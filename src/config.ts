@@ -1,7 +1,7 @@
 // supa's own state: config-dir resolution, the registry (name -> path), the
 // key=value config (max_active / ram_budget), and deriving a project's docker
 // label + ports + free slot from its supabase/config.toml.
-import { die, home, isDir, isFile, join, OS, parentDir } from "./util.ts";
+import { die, expandTilde, home, isDir, isFile, join, OS, parentDir } from "./util.ts";
 import {
   parseEnvMap,
   parseLabel,
@@ -112,7 +112,8 @@ export function setConfigKey(key: string, val: string): void {
     "# supa config — written by `supa config`",
     "# max_active: how many stacks may run at once (default 1).",
     "# ram_budget_gb: warn when total running-stack RAM exceeds this (optional).",
-    "# Per-shell overrides: SUPA_MAX_ACTIVE, SUPA_RAM_BUDGET, SUPA_ALLOW_MULTI=1.",
+    "# backup_dir: where `supa backup` writes dumps (default <project>/backups/).",
+    "# Per-shell overrides: SUPA_MAX_ACTIVE, SUPA_RAM_BUDGET, SUPA_BACKUP_DIR, SUPA_ALLOW_MULTI=1.",
   ];
   for (const [k, v] of Object.entries(kv)) lines.push(`${k} = ${v}`);
   Deno.writeTextFileSync(path, lines.join("\n") + "\n");
@@ -140,6 +141,12 @@ export function readRamBudget(): number | null {
   }
   const n = Number(readConfigKV().ram_budget_gb);
   return n > 0 ? n : null;
+}
+export function readBackupDir(): string | null {
+  const env = Deno.env.get("SUPA_BACKUP_DIR");
+  if (env && env.trim() !== "") return expandTilde(env.trim());
+  const cfg = readConfigKV().backup_dir;
+  return cfg && cfg.trim() !== "" ? expandTilde(cfg.trim()) : null;
 }
 
 // ---------- slots / port re-banding -------------------------------------------
