@@ -8,6 +8,13 @@ All notable changes to supa are documented here. This project adheres to
 
 ### Added
 
+- **Resource management.** Per-project `supa.limits` (`<service>.memory` /
+  `<service>.cpus`) applies per-container caps via `docker update` automatically on
+  `supa up` — memory is a hard cap (no swap). `supa limit <p>` re-applies to a
+  running stack. `supa prune` reclaims Docker disk: dangling images by default,
+  `--images` (all unused), `--volumes` (orphan stacks' volumes, typed confirm),
+  `--all`, `--dry-run`.
+
 - `supa backup <p>` — dump the local DB to a timestamped `.sql`. Default is a full
   snapshot (roles + schema + data); `--data-only` / `--schema-only` / `--roles-only`
   for a single part, plus `--use-copy` and `--out <dir>`. Atomic write (temp →

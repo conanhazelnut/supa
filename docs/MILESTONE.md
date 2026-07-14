@@ -32,6 +32,7 @@ Legend: ✅ done · 🟡 planned · 🔬 only if a real need shows up
 | **credential → env**                        | ✅                      | ✅ `env --write` (+ `supa.env.map` rename)                             |
 | **port assignment**                         | ✅ auto                 | ✅ `ports` re-band + `add --init` auto-assign                          |
 | **alert rules / thresholds**                | ✅                      | ✅ `stats` per-stack/total RAM vs `ram_budget` + suggests `max_active` |
+| **resource limits / disk reclaim**          | partial                 | ✅ `supa.limits` (per-container memory/cpu caps) + `prune` (disk)      |
 | **credential rotation**                     | ✅                      | ✅ `rotate` (new JWT signing key + restart)                            |
 | **backup / restore / upgrade**              | ✅                      | ✅ `backup` · `restore` · hooks · `upgrade`                            |
 | **web dashboard / GUI**                     | ✅ (React)              | 🔬 a **TUI** over web, only if needed                                  |
@@ -102,6 +103,19 @@ restore targets a Supabase-initialised DB (data-only into a reset/migrated schem
 is the clean path; that's what the hooks automate). Live-tested: backup (full +
 data-only) and restore (happy path) against a real stack; `upgrade` validated via
 `--dry-run` (the destructive full run is left to a real major-version bump).
+
+### M4.5 — Resource management (✅ done)
+
+Cut RAM and disk on RAM-bound hosts — a core supa focus, all by orchestrating docker.
+
+- **`supa.limits`** — per-project per-container `memory`/`cpus` caps, applied via
+  `docker update` right after `supa up` (memory is a **hard** cap, no swap, so a
+  runaway container is OOM-killed instead of swapping the host to death).
+  `supa limit <p>` re-applies to an already-running stack. Moves `ram_budget` from
+  advisory toward enforcement.
+- **`supa prune`** — reclaim Docker disk: dangling images (default), `--images`
+  (all unused; re-pulls next up), `--volumes` (orphan stacks' volumes — not in the
+  registry — with a typed confirm), `--all`, `--dry-run`.
 
 ### M5 — Distribution & scale (🟡 / 🔬)
 

@@ -1,0 +1,29 @@
+# supa.limits — per-container resource caps for one stack.
+#
+# Put this next to your project's supabase/config.toml (same place as
+# supa.env.map / supa.hooks). supa applies it automatically after `supa up`
+# (and you can re-apply to a running stack with `supa limit <project>`).
+#
+# Format:  <service>.memory = <size>   |   <service>.cpus = <n>
+#   * <service> is the container's service name (db, kong, auth, rest, realtime,
+#     storage, analytics, pooler, imgproxy, studio, edge_runtime, vector, …) or
+#     `default` (applied to every container unless overridden).
+#   * memory: a docker size like 256m, 512m, 1g, 2g. Applied as a HARD cap
+#     (no swap) — a container that exceeds it is OOM-killed, not allowed to
+#     balloon into host swap. So give the heavy ones (db) enough headroom.
+#   * cpus: a fraction or whole number of cores, e.g. 0.5, 1, 2.
+#
+# Sensible starting point for a RAM-bound host (tune to your workload):
+
+default.memory = 256m      # most services are light (kong, auth, rest, meta…)
+
+db.memory       = 1g       # Postgres — the one that actually needs room
+db.cpus         = 2
+
+analytics.memory = 512m    # logflare, if enabled — a memory hog
+realtime.memory  = 384m
+pooler.memory    = 384m    # supavisor, if enabled
+storage.memory   = 384m
+
+# Tip: the biggest RAM win is NOT capping — it's turning off services you don't
+# use in config.toml (e.g. [analytics] enabled = false). Cap what remains here.

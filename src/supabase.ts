@@ -1,7 +1,7 @@
 // Talking to the outside world: resolve the Supabase CLI, run docker/supabase
 // (never through a shell), and the start/stop/guard lifecycle.
-import { die, home, isFile, join, OS } from "./util.ts";
-import { cfgDir, labelOf, names, readMaxActive, rootOf } from "./config.ts";
+import { die, escapeRegExp, home, isFile, join, OS } from "./util.ts";
+import { cfgDir, labelOf, names, readLimits, readMaxActive, rootOf } from "./config.ts";
 
 export const SUPABASE_MISSING =
   "Supabase CLI not found on PATH — install it: https://supabase.com/docs/guides/local-development";
@@ -124,6 +124,41 @@ async function pinNoRestart(label: string): Promise<void> {
   const ids = out.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
   if (ids.length) await runCapture("docker", ["update", "--restart", "no", ...ids]);
 }
+// Apply a project's supa.limits (if any) to its running containers via
+// `docker update`. memory sets a HARD cap (--memory-swap = --memory, no swap) so a
+// runaway container can't balloon past it into host swap. Returns count applied.
+export async function applyLimits(name: string): Promise<number> {
+  const wd = cfgDir(name);
+  if (!wd) return 0;
+  const limits = readLimits(wd);
+  if (Object.keys(limits).length === 0) return 0;
+  const label = labelOf(name);
+  if (!label) return 0;
+  const { code, out } = await runCapture("docker", [
+    "ps",
+    "--filter",
+    `label=com.supabase.cli.project=${label}`,
+    "--format",
+    "{{.Names}}",
+  ]);
+  if (code !== 0) return 0;
+  const containers = out.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+  const def = limits.default ?? {};
+  const svcRe = new RegExp(`_${escapeRegExp(label)}$`);
+  let applied = 0;
+  for (const c of containers) {
+    const svc = c.replace(/^supabase_/, "").replace(svcRe, "");
+    const cap = { ...def, ...(limits[svc] ?? {}) };
+    const args: string[] = [];
+    if (cap.memory) args.push("--memory", cap.memory, "--memory-swap", cap.memory);
+    if (cap.cpus) args.push("--cpus", cap.cpus);
+    if (args.length === 0) continue;
+    const r = await runCapture("docker", ["update", ...args, c]);
+    if (r.code === 0) applied++;
+    else console.error(`  ! could not limit ${svc} (docker update exit ${r.code})`);
+  }
+  return applied;
+}
 
 export async function startStack(name: string): Promise<void> {
   const wd = cfgDir(name);
@@ -134,6 +169,8 @@ export async function startStack(name: string): Promise<void> {
   if (code !== 0) die(`supabase start failed for '${name}' (exit ${code})`);
   const lbl = labelOf(name);
   if (lbl) await pinNoRestart(lbl);
+  const n = await applyLimits(name);
+  if (n) console.log(`  applied resource limits to ${n} container(s)  (supa.limits)`);
 }
 export async function stopStack(name: string): Promise<void> {
   const wd = cfgDir(name);

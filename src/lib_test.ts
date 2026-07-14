@@ -18,6 +18,7 @@ import {
   parseEnvMap,
   parseHooks,
   parseLabel,
+  parseLimits,
   parseMajorVersion,
   parsePort,
   parseRegistry,
@@ -328,4 +329,20 @@ Deno.test("setMajorVersion bumps [db] in place, leaves other tables + reports ch
 Deno.test("setMajorVersion is a no-op when already at target", () => {
   const { changed } = setMajorVersion(DBCFG, "17");
   eq(changed, false);
+});
+
+// ---------- resource limits ---------------------------------------------------
+Deno.test("parseLimits reads per-service memory/cpus, skips malformed", () => {
+  const l = parseLimits(
+    `# limits\ndefault.memory = 256m\ndb.memory = 1g\ndb.cpus = 2\n` +
+      `analytics.memory = 512m\nbad.memory = notsize\nweird = x\n`,
+  );
+  eq(l.default, { memory: "256m" });
+  eq(l.db, { memory: "1g", cpus: "2" });
+  eq(l.analytics, { memory: "512m" });
+  eq("bad" in l, false); // malformed memory value rejected
+  eq("weird" in l, false); // no .memory/.cpus resource
+});
+Deno.test("parseLimits returns empty for blank/comment input", () => {
+  eq(parseLimits("\n# nope\n"), {});
 });

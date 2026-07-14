@@ -37,6 +37,7 @@ import {
   readBackupDir,
   readEnvMap,
   readHooks,
+  readLimits,
   readMaxActive,
   readRamBudget,
   readRegistry,
@@ -46,6 +47,7 @@ import {
   setConfigKey,
 } from "./config.ts";
 import {
+  applyLimits,
   dbContainer,
   guard,
   nameForLabel,
@@ -938,6 +940,90 @@ export async function cmdUpgrade(rest: string[]): Promise<void> {
   if (hooks.restorePost) await runHook("restore.post", hooks.restorePost, wd);
   console.log(`✓ upgraded ${p} to Postgres ${to}  (snapshot kept: ${payload})`);
 }
+export async function cmdLimit(rest: string[]): Promise<void> {
+  if (rest.length !== 1) {
+    die("usage: supa limit <project>   (apply supa.limits to the running stack now)");
+  }
+  const p = rest[0];
+  requireProject(p);
+  const wd = cfgDir(p);
+  if (!wd) die(`unresolvable project '${p}'`);
+  if (Object.keys(readLimits(wd)).length === 0) {
+    die(`no supa.limits for '${p}' — create ${join(wd, "supa.limits")} (see docs/SUPA.md)`);
+  }
+  const lbl = labelOf(p);
+  if (!lbl || !(await runningLabels()).includes(lbl)) {
+    die(`'${p}' isn't running — limits apply automatically on 'supa up ${p}'`);
+  }
+  const n = await applyLimits(p);
+  console.log(`✓ applied resource limits to ${n} container(s) in ${p}`);
+}
+export async function cmdPrune(rest: string[]): Promise<void> {
+  const flags = new Set(rest.filter((a) => a.startsWith("-")));
+  const dry = flags.has("--dry-run");
+  const yes = flags.has("--yes") || flags.has("-y");
+  const doAll = flags.has("--all");
+  const doImages = flags.has("--images") || doAll;
+  const doVolumes = flags.has("--volumes") || doAll;
+
+  // Orphan volumes: supabase volumes whose project label is neither registered nor
+  // running — old stacks left behind. They hold DATA, so removal needs a confirm.
+  const registered = new Set(names().map((n) => labelOf(n)).filter((l): l is string => !!l));
+  const running = new Set(await runningLabels());
+  const { out: vout } = await runCapture("docker", [
+    "volume",
+    "ls",
+    "--format",
+    '{{.Name}}\t{{.Label "com.supabase.cli.project"}}',
+  ]);
+  const orphanVols: string[] = [];
+  for (const line of vout.split(/\r?\n/)) {
+    const [vname, vlbl] = line.split("\t");
+    const l = (vlbl ?? "").trim();
+    if (vname?.trim() && l && !registered.has(l) && !running.has(l)) orphanVols.push(vname.trim());
+  }
+
+  console.log("supa prune — plan:");
+  console.log("  • dangling images  → prune (safe)");
+  console.log(
+    `  • unused images    → ${doImages ? "prune ALL (re-pulls on next up)" : "skip (--images)"}`,
+  );
+  console.log(
+    `  • orphan volumes   → ${
+      orphanVols.length === 0
+        ? "none"
+        : (doVolumes ? "DELETE (data!): " : "keep (--volumes): ") + orphanVols.join(", ")
+    }`,
+  );
+  if (dry) {
+    console.log("(dry run — nothing removed)");
+    return;
+  }
+
+  const reclaimed = (out: string) =>
+    out.split(/\r?\n/).find((l) => /Total reclaimed/.test(l))?.trim();
+  const d = await runCapture("docker", ["image", "prune", "-f"]);
+  console.log(`  ${reclaimed(d.out) ?? "pruned dangling images"}`);
+  if (doImages) {
+    const a = await runCapture("docker", ["image", "prune", "-af"]);
+    console.log(`  ${reclaimed(a.out) ?? "pruned unused images"}`);
+  }
+  if (doVolumes && orphanVols.length) {
+    if (!yes) {
+      console.error(`⚠ about to DELETE ${orphanVols.length} volume(s) holding real data:`);
+      for (const v of orphanVols) console.error(`    ${v}`);
+      const ans = await readLine(`  type 'delete' to confirm: `);
+      if (ans !== "delete") die("aborted (confirmation did not match)");
+    }
+    const r = await runCapture("docker", ["volume", "rm", ...orphanVols]);
+    console.log(
+      r.code === 0
+        ? `  removed ${orphanVols.length} orphan volume(s)`
+        : `  ! volume rm failed (exit ${r.code})`,
+    );
+  }
+  console.log("✓ prune done");
+}
 export function cmdHelp(): void {
   const defHome = OS === "windows" ? "%APPDATA%\\supa" : "~/.config/supa";
   console.log(
@@ -955,12 +1041,14 @@ export function cmdHelp(): void {
   supa upgrade <p> --to <ver> [--dry-run]      Postgres major upgrade (snapshot+restore)
   supa status                   raw docker view, grouped by project
   supa stats                    CPU/MEM per container + per-stack & total RAM
+  supa limit <p>                apply supa.limits (memory/cpus caps) to a running stack
   supa logs <p> [svc] [-f]      tail a stack's container logs
   supa env <p> [--write [f]]    print keys/URLs, or merge them into a .env file
   supa add <name> <path> [--init] [--slot N]   register (--init: init + assign ports)
   supa rm <name>                unregister a project
   supa ports <name> [slot]      re-band that project's 543XX ports to a free slot
   supa doctor                   preflight: docker, CLI, registry, ports, config
+  supa prune [--images|--volumes|--all] [--dry-run]  reclaim docker disk (safe by default)
   supa config [max-active <n> | ram-budget <gb> | backup-dir <path>]   show/set
   supa version                  print the supa version
   supa help                     this

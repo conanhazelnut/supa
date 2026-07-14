@@ -4,16 +4,18 @@
 import { die, expandTilde, home, isDir, isFile, join, OS, parentDir } from "./util.ts";
 import {
   type Hooks,
+  type Limits,
   parseEnvMap,
   parseHooks,
   parseLabel,
+  parseLimits,
   parsePort,
   parseRegistry,
   type Project,
   rebandText,
 } from "./parse.ts";
 
-export type { Hooks, Project };
+export type { Hooks, Limits, Project };
 
 // ---------- config-dir resolution ---------------------------------------------
 export function configDir(): string {
@@ -169,6 +171,10 @@ export function readEnvMap(cfgDirPath: string): Array<{ app: string; native: str
 export function readHooks(cfgDirPath: string): Hooks {
   const p = join(cfgDirPath, "supa.hooks");
   return isFile(p) ? parseHooks(Deno.readTextFileSync(p)) : {};
+}
+export function readLimits(cfgDirPath: string): Limits {
+  const p = join(cfgDirPath, "supa.limits");
+  return isFile(p) ? parseLimits(Deno.readTextFileSync(p)) : {};
 }
 export function rebandConfig(f: string, slot: string): string[] {
   const src = Deno.readTextFileSync(f);

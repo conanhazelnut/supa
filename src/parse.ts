@@ -266,6 +266,32 @@ export function parseHooks(text: string): Hooks {
   return h;
 }
 
+// ---------- resource limits (per-project supa.limits, pure parse) --------------
+
+// Per-container caps applied on `supa up` (docker update). Keys are service names
+// (e.g. `db`, `analytics`) or `default` (applied to every container).
+export interface Cap {
+  memory?: string; // e.g. "1g", "512m"
+  cpus?: string; // e.g. "2", "1.5"
+}
+export type Limits = Record<string, Cap>;
+
+export function parseLimits(text: string): Limits {
+  const out: Limits = {};
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (line === "" || line.startsWith("#")) continue;
+    const m = line.match(/^([A-Za-z0-9_]+)\.(memory|cpus)\s*=\s*(\S+)/);
+    if (!m) continue;
+    const val = m[3];
+    // memory: <n>[b|k|m|g]; cpus: a positive number — skip anything malformed.
+    if (m[2] === "memory" && !/^\d+(\.\d+)?[bkmgBKMG]?$/.test(val)) continue;
+    if (m[2] === "cpus" && !/^\d+(\.\d+)?$/.test(val)) continue;
+    (out[m[1]] ??= {})[m[2] as "memory" | "cpus"] = val;
+  }
+  return out;
+}
+
 // Ensure config.toml has an active signing_keys_path; return updated text + path.
 export function ensureSigningKeysPath(text: string): { text: string; relPath: string } {
   const active = text.match(/^\s*signing_keys_path\s*=\s*"([^"]+)"/m);

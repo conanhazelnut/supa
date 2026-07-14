@@ -82,12 +82,14 @@ Same binary, same commands on every OS (`supa` on macOS/Linux, `supa.exe` /
 | `supa upgrade <p> --to <ver>`       | Postgres major upgrade: snapshot → recreate → restore           |
 | `supa status` (`ps`)                | raw docker view, grouped by project                             |
 | `supa stats`                        | CPU/MEM per container + per-stack & total RAM (vs `ram_budget`) |
+| `supa limit <p>`                    | apply `supa.limits` (memory/cpus caps) to a running stack       |
 | `supa logs <p> [svc] [-f]`          | tail a stack's container logs (no `svc` → list services)        |
 | `supa env <p> [--write [f]]`        | print keys/URLs, or merge them into a `.env` file               |
 | `supa add <name> <path> [--init]`   | register a project (`--init`: `supabase init` + assign ports)   |
 | `supa rm <name>`                    | unregister a project                                            |
 | `supa ports <name> [slot]`          | re-band that project's `543XX` ports to a free slot             |
 | `supa doctor`                       | preflight: docker, CLI, registry, ports, config                 |
+| `supa prune [flags]`                | reclaim docker disk (dangling images; `--images`/`--volumes`)   |
 | `supa config`                       | show `max_active`, `ram_budget` + resolved paths                |
 | `supa config max-active <n>`        | set how many stacks may run at once (persists)                  |
 | `supa config ram-budget <gb>`       | warn in `stats` when total RAM exceeds this                     |
@@ -186,6 +188,43 @@ backup.type  = full                   # default type for `supa backup` (full|dat
 
 Hooks are the one place supa runs a shell command (they're your commands, like a
 Makefile target). A failing hook aborts the operation.
+
+### Resource limits (`supa.limits`) — capping RAM/CPU per stack
+
+By default a Supabase container has **no memory limit** — it can balloon up to the
+whole Docker VM (and past your physical RAM into swap). On a RAM-bound host, drop a
+`supa.limits` next to `config.toml` to cap each container. supa applies it via
+`docker update` right after `supa up` (and `supa limit <p>` re-applies to a running
+stack). See [`examples/supa.limits.example`](../examples/supa.limits.example):
+
+```
+default.memory = 256m      # every container unless overridden
+db.memory      = 1g        # Postgres needs the most
+db.cpus        = 2
+analytics.memory = 512m    # if enabled — a memory hog
+```
+
+`memory` is a **hard cap** (no swap — an over-limit container is OOM-killed rather
+than swapping the host to death), so give heavy services (`db`) headroom. **The
+bigger RAM win, though, is turning off services you don't use** in `config.toml`
+(e.g. `[analytics] enabled = false`) — cap what remains with `supa.limits`.
+
+### Reclaiming disk (`supa prune`)
+
+Supabase images and volumes are large. `supa prune` reclaims Docker disk:
+
+```sh
+supa prune                 # dangling images only (safe) + report orphan volumes
+supa prune --dry-run       # show the plan, remove nothing
+supa prune --images        # also remove ALL unused images (re-pulls on next up)
+supa prune --volumes       # also delete orphan volumes — stacks not in the
+                           #   registry (real data → type 'delete' to confirm)
+supa prune --all           # images + volumes
+```
+
+An **orphan volume** is a `supabase_*` volume whose project isn't in your registry
+and isn't running — a leftover from a removed stack. `supa doctor` / `supa stats`
+help you see what's live before pruning.
 
 ### Setting the concurrency limit
 

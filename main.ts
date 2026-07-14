@@ -21,9 +21,11 @@ import {
   cmdDown,
   cmdEnv,
   cmdHelp,
+  cmdLimit,
   cmdLogs,
   cmdLs,
   cmdPorts,
+  cmdPrune,
   cmdRestart,
   cmdRestore,
   cmdRm,
@@ -81,6 +83,9 @@ async function main(): Promise<void> {
     case "stats":
       await cmdStats();
       break;
+    case "limit":
+      await cmdLimit(rest);
+      break;
     case "logs":
       await cmdLogs(rest);
       break;
@@ -99,6 +104,9 @@ async function main(): Promise<void> {
       break;
     case "doctor":
       await cmdDoctor();
+      break;
+    case "prune":
+      await cmdPrune(rest);
       break;
     case "config":
       cmdConfig(rest);
