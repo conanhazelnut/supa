@@ -33,7 +33,7 @@ Legend: ✅ done · 🟡 planned · 🔬 only if a real need shows up
 | **port assignment**                         | ✅ auto                 | ✅ `ports` re-band + `add --init` auto-assign                          |
 | **alert rules / thresholds**                | ✅                      | ✅ `stats` per-stack/total RAM vs `ram_budget` + suggests `max_active` |
 | **credential rotation**                     | ✅                      | ✅ `rotate` (new JWT signing key + restart)                            |
-| **backup / restore / upgrade**              | ✅                      | 🟡 `backup` ✅ · `restore` ✅ · hooks ✅ · `upgrade` planned           |
+| **backup / restore / upgrade**              | ✅                      | ✅ `backup` · `restore` · hooks · `upgrade`                            |
 | **web dashboard / GUI**                     | ✅ (React)              | 🔬 a **TUI** over web, only if needed                                  |
 | **many self-hosted instances (compose)**    | ✅ core model           | 🔬 separate track — different philosophy                               |
 
@@ -69,7 +69,7 @@ plus secret masking). All shipped and tested (fake-shim + real smoke).
   (`rotate` is verified with the real CLI on a throwaway project; its restart
   path is the same proven `up`/`down` code.)
 
-### M4 — Data management (backup / restore / upgrade)
+### M4 — Data management (backup / restore / upgrade) (✅ done)
 
 supa owns the local data lifecycle by **orchestrating** `supabase db dump` + the
 db container's `psql` — never reimplementing them. Destructive steps reuse the
@@ -89,15 +89,19 @@ db container's `psql` — never reimplementing them. Destructive steps reuse the
 - **hooks** (✅) — an optional per-project `supa.hooks` (`restore.pre`,
   `restore.post`, `backup.type`): supa owns the flow, each project declares its own
   migrate/seed steps. One flow, N projects, zero hardcoding.
-- **`upgrade <p> --to <ver>`** (🟡) — automate the Postgres major-version dance
-  (backup → stop → bump `major_version` → drop volumes → start → hooks → restore).
-  The payoff of owning backup + restore.
+- **`upgrade <p> --to <ver>`** (✅) — automates the Postgres major-version dance:
+  data-only snapshot → stop → bump `major_version` (+ `.bak`) → drop the DB volume
+  `supabase_db_<label>` → start fresh → restore (+ hooks). Type-name confirm,
+  `--dry-run` to preview; snapshot kept for recovery. Only the DB volume is dropped
+  (a storage volume, if any, is preserved).
 
 Delivery: **Phase 1 `backup`** ✅ → **Phase 2 `restore` + hooks** ✅ → **Phase 3
-`upgrade`** (next). The pre-Phase-2 spike is retired: `docker exec … psql`
-round-trips fine, and — key finding — a Supabase dump **omits managed
-schemas/roles**, so restore targets a Supabase-initialised DB (data-only into a
-reset/migrated schema is the clean path; that's what the hooks automate).
+`upgrade`** ✅. The pre-Phase-2 spike is retired: `docker exec … psql` round-trips
+fine, and — key finding — a Supabase dump **omits managed schemas/roles**, so
+restore targets a Supabase-initialised DB (data-only into a reset/migrated schema
+is the clean path; that's what the hooks automate). Live-tested: backup (full +
+data-only) and restore (happy path) against a real stack; `upgrade` validated via
+`--dry-run` (the destructive full run is left to a real major-version bump).
 
 ### M5 — Distribution & scale (🟡 / 🔬)
 

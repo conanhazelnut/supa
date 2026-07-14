@@ -18,10 +18,12 @@ import {
   parseEnvMap,
   parseHooks,
   parseLabel,
+  parseMajorVersion,
   parsePort,
   parseRegistry,
   rebandText,
   resolveBackupDir,
+  setMajorVersion,
   signingKeyArray,
   tsStamp,
 } from "./parse.ts";
@@ -300,4 +302,30 @@ Deno.test("parseHooks reads restore hooks + backup type, skips junk", () => {
 });
 Deno.test("parseHooks returns empty object for blank/garbage input", () => {
   eq(parseHooks("# just a comment\n\n"), {});
+});
+
+// ---------- upgrade: major_version read/write ---------------------------------
+const DBCFG = `project_id = "x"
+[db]
+port = 54322
+major_version = 17
+[db.pooler]
+port = 54329
+major_version = 99
+`;
+Deno.test("parseMajorVersion reads it from [db] only (not [db.pooler])", () => {
+  eq(parseMajorVersion(DBCFG), "17");
+  eq(parseMajorVersion(`[db]\nmajor_version = 15\n`), "15");
+  eq(parseMajorVersion(`[api]\nport = 1\n`), null);
+});
+Deno.test("setMajorVersion bumps [db] in place, leaves other tables + reports change", () => {
+  const { text, changed } = setMajorVersion(DBCFG, "18");
+  eq(changed, true);
+  eq(parseMajorVersion(text), "18");
+  ok(text.includes("major_version = 99"), "[db.pooler] value untouched");
+  ok(text.includes("port = 54322"), "other [db] keys untouched");
+});
+Deno.test("setMajorVersion is a no-op when already at target", () => {
+  const { changed } = setMajorVersion(DBCFG, "17");
+  eq(changed, false);
 });

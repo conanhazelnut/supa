@@ -20,6 +20,10 @@ All notable changes to supa are documented here. This project adheres to
   the DB unchanged (`--no-tx` to opt out; `--db <name>` for a non-default database).
 - Per-project **`supa.hooks`** — `restore.pre` / `restore.post` (run around a
   restore) and `backup.type` (default type for `supa backup`).
+- `supa upgrade <p> --to <ver>` — automated Postgres major-version migration:
+  data-only snapshot → stop → bump `[db] major_version` (+ `.bak`) → drop the DB
+  volume → start fresh → restore the snapshot (+ hooks). Type-name confirm,
+  `--dry-run` to preview; the snapshot is kept for recovery.
 
 ## [0.1.0] — 2026-07-13
 

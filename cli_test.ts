@@ -170,3 +170,25 @@ Deno.test("restore with a missing file exits before touching docker", async () =
     }
   });
 });
+
+Deno.test("upgrade --dry-run prints the plan and changes nothing", async () => {
+  await withHome(async (home) => {
+    const proj = await Deno.makeTempDir({ prefix: "supa-proj-" });
+    try {
+      await Deno.mkdir(`${proj}/supabase`, { recursive: true });
+      await Deno.writeTextFile(
+        `${proj}/supabase/config.toml`,
+        `project_id = "demo"\n[db]\nport = 54392\nmajor_version = 15\n`,
+      );
+      await Deno.writeTextFile(`${home}/supa.registry`, `demo|${proj}\n`);
+      const r = await runSupa(["upgrade", "demo", "--to", "17", "--dry-run"], home);
+      ok(r.code === 0, r.err);
+      ok(/Postgres 15 → 17/.test(r.out), r.out);
+      ok(/dry run/.test(r.out), r.out);
+      const cfg = await Deno.readTextFile(`${proj}/supabase/config.toml`);
+      ok(cfg.includes("major_version = 15"), "config must be unchanged in a dry run");
+    } finally {
+      await Deno.remove(proj, { recursive: true });
+    }
+  });
+});

@@ -79,6 +79,7 @@ Same binary, same commands on every OS (`supa` on macOS/Linux, `supa.exe` /
 | `supa rotate <p> [--yes]`           | new JWT signing key + restart (invalidates tokens)              |
 | `supa backup <p> [flags]`           | dump the local DB to a timestamped `.sql` (see below)           |
 | `supa restore <p> <file>\|--latest` | load a dump into the live DB — atomic, with a safety pre-dump   |
+| `supa upgrade <p> --to <ver>`       | Postgres major upgrade: snapshot → recreate → restore           |
 | `supa status` (`ps`)                | raw docker view, grouped by project                             |
 | `supa stats`                        | CPU/MEM per container + per-stack & total RAM (vs `ram_budget`) |
 | `supa logs <p> [svc] [-f]`          | tail a stack's container logs (no `svc` → list services)        |
@@ -145,6 +146,16 @@ Same binary, same commands on every OS (`supa` on macOS/Linux, `supa.exe` /
   schemas/roles, so it must restore into a Supabase-initialised DB — a **data-only**
   dump into a migrated (freshly `reset`/`start`ed) schema is the clean path; a full
   dump conflicts with an existing schema. Automate the prep with hooks ↓.
+- **`upgrade <p> --to <ver>`** automates a **Postgres major-version** migration —
+  the otherwise-manual dance — in six steps: data-only snapshot → stop → bump
+  `[db] major_version` (backs up `config.toml`) → **drop the DB volume**
+  `supabase_db_<label>` → start fresh on the new version (migrations run) → restore
+  the snapshot (running `restore.pre`/`restore.post` hooks). **Destructive** (drops
+  the volume): type-name confirm (`--yes` to skip), and the snapshot is kept as the
+  recovery artifact. Preview the plan with **`--dry-run`**. The restore step needs
+  the schema in place first — that's the project's `restore.pre` hook (e.g.
+  `deno task db:migrate`). Only the DB volume is dropped; a storage volume, if any,
+  is left intact.
 
 ### Per-project hooks (`supa.hooks`)
 

@@ -32,6 +32,40 @@ export function parseLabel(text: string): string | null {
   return null;
 }
 
+// Read `major_version` under the [db] table from config.toml text.
+export function parseMajorVersion(text: string): string | null {
+  let inDb = false;
+  for (const line of text.split(/\r?\n/)) {
+    if (/^\s*\[/.test(line)) inDb = /^\s*\[db\]\s*(#.*)?$/.test(line);
+    else if (inDb) {
+      const m = line.match(/^\s*major_version\s*=\s*(\d+)/);
+      if (m) return m[1];
+    }
+  }
+  return null;
+}
+
+// Set `major_version` under [db]; returns updated text + whether it changed.
+export function setMajorVersion(text: string, ver: string): { text: string; changed: boolean } {
+  let inDb = false;
+  let changed = false;
+  const out = text.split(/\r?\n/).map((line) => {
+    if (/^\s*\[/.test(line)) {
+      inDb = /^\s*\[db\]\s*(#.*)?$/.test(line);
+      return line;
+    }
+    if (inDb) {
+      const m = line.match(/^(\s*major_version\s*=\s*)(\d+)(.*)$/);
+      if (m && m[2] !== ver) {
+        changed = true;
+        return `${m[1]}${ver}${m[3]}`;
+      }
+    }
+    return line;
+  }).join("\n");
+  return { text: out, changed };
+}
+
 // Read the host `port` under `[section]` from config.toml text.
 export function parsePort(text: string, section: string): string | null {
   const secRe = new RegExp(`^\\s*\\[${escapeRegExp(section)}\\]`);

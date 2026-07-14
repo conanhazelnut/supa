@@ -19,7 +19,9 @@ import {
   ensureSigningKeysPath,
   latestBackup,
   mergeDotenv,
+  parseMajorVersion,
   resolveBackupDir,
+  setMajorVersion,
   signingKeyArray,
   tsStamp,
 } from "./parse.ts";
@@ -631,6 +633,24 @@ async function runHook(kind: string, cmd: string, cwd: string): Promise<void> {
   }
   if (code !== 0) die(`${kind} hook failed (exit ${code}): ${cmd}`);
 }
+// `docker exec` args to feed a dump into a stack's psql. --single-transaction
+// (tx) makes the load atomic; ON_ERROR_STOP fails loudly instead of half-applying.
+function psqlArgs(container: string, dbName: string, tx: boolean): string[] {
+  const a = [
+    "exec",
+    "-i",
+    container,
+    "psql",
+    "-U",
+    "postgres",
+    "-d",
+    dbName,
+    "-v",
+    "ON_ERROR_STOP=1",
+  ];
+  if (tx) a.push("--single-transaction");
+  return a;
+}
 export async function cmdBackup(rest: string[]): Promise<void> {
   const usage =
     "usage: supa backup <project> [--data-only|--schema-only|--roles-only] [--out <dir>] [--use-copy]";
@@ -769,22 +789,9 @@ export async function cmdRestore(rest: string[]): Promise<void> {
   // Pipe the dump into the container's psql. --single-transaction (default) makes
   // it atomic — any error rolls the whole restore back, leaving the DB unchanged;
   // ON_ERROR_STOP=1 fails loudly instead of half-applying.
-  const psql = [
-    "exec",
-    "-i",
-    container,
-    "psql",
-    "-U",
-    "postgres",
-    "-d",
-    dbName,
-    "-v",
-    "ON_ERROR_STOP=1",
-  ];
   const tx = !flags.has("--no-tx");
-  if (tx) psql.push("--single-transaction");
   console.log(`== restoring ${p} from ${file}`);
-  const code = await runStdinFile("docker", psql, file);
+  const code = await runStdinFile("docker", psqlArgs(container, dbName, tx), file);
   if (code !== 0) {
     die(
       `restore failed (psql exit ${code}).${
@@ -797,6 +804,122 @@ export async function cmdRestore(rest: string[]): Promise<void> {
   }
   if (hooks.restorePost) await runHook("restore.post", hooks.restorePost, wd);
   console.log(`✓ restored ${p} from ${file}`);
+}
+export async function cmdUpgrade(rest: string[]): Promise<void> {
+  const usage = "usage: supa upgrade <project> --to <major_version> [--yes] [--dry-run]";
+  const flags = new Set<string>();
+  const pos: string[] = [];
+  let to: string | undefined;
+  for (let i = 0; i < rest.length; i++) {
+    const a = rest[i];
+    if (a === "--to") to = rest[++i];
+    else if (a.startsWith("-")) flags.add(a);
+    else pos.push(a);
+  }
+  if (pos.length !== 1 || !to) die(usage);
+  if (!/^\d+$/.test(to)) die(`--to must be a Postgres major version (got '${to}')`);
+  const p = pos[0];
+  requireProject(p);
+  const wd = cfgDir(p);
+  if (!wd) die(`unresolvable project '${p}'`);
+  const f = cfgFile(p);
+  if (!f) die(`no supabase/config.toml for '${p}'`);
+  const lbl = labelOf(p);
+  if (!lbl) die(`cannot resolve docker label for '${p}'`);
+
+  const cfgText = Deno.readTextFileSync(f);
+  const current = parseMajorVersion(cfgText);
+  if (current === null) die(`no [db] major_version in ${f} — nothing to upgrade`);
+  if (current === to) die(`'${p}' is already on Postgres ${to}`);
+
+  let dir: string;
+  try {
+    dir = resolveBackupDir({ configured: readBackupDir(), projectRoot: rootOf(p) });
+  } catch {
+    die(`could not resolve a backup directory for '${p}' (needed for the data snapshot)`);
+  }
+  const volume = `supabase_db_${lbl}`;
+  const payload = join(dir, `${p}_upgrade-${current}-to-${to}_${tsStamp(new Date())}.sql`);
+
+  console.log(`supa upgrade '${p}': Postgres ${current} → ${to}`);
+  console.log(`  1. data-only snapshot   → ${payload}`);
+  console.log(`  2. stop the stack`);
+  console.log(`  3. major_version ${current} → ${to} in config.toml (+ .bak)`);
+  console.log(`  4. drop DB volume       ${volume}`);
+  console.log(`  5. start the stack      (fresh ${to} volume; migrations run)`);
+  console.log(`  6. restore the snapshot (+ restore.pre/post hooks)`);
+  if (flags.has("--dry-run")) {
+    console.log("(dry run — nothing changed)");
+    return;
+  }
+
+  console.error(`⚠ this DROPS the '${p}' DB volume and rebuilds it on Postgres ${to}.`);
+  console.error(`  Your data is snapshotted first, but this is a major, destructive operation.`);
+  if (!(flags.has("--yes") || flags.has("-y"))) {
+    const ans = await readLine(`  type '${p}' to confirm: `);
+    if (ans !== p) die("aborted (confirmation did not match)");
+  }
+
+  // Snapshot needs the live DB, so the stack has to be up first.
+  if (!(await runningLabels()).includes(lbl)) {
+    die(`'${p}' isn't running — start it first: supa up ${p}`);
+  }
+
+  // 1. data snapshot — the recovery artifact and the restore payload.
+  try {
+    Deno.mkdirSync(dir, { recursive: true });
+  } catch { /* exists */ }
+  console.log(`>> [1/6] snapshot → ${payload}`);
+  try {
+    await performBackup(p, wd, "data", false, payload);
+  } catch (e) {
+    die(`snapshot failed — aborting before any change: ${e instanceof Error ? e.message : e}`);
+  }
+  const recovery = `  data snapshot: ${payload}`;
+
+  // 2. stop
+  console.log(`>> [2/6] stopping ${p}`);
+  await stopStack(p);
+
+  // 3. bump major_version (backup config first)
+  console.log(`>> [3/6] major_version ${current} → ${to}`);
+  const { text: bumped, changed } = setMajorVersion(cfgText, to);
+  if (!changed) die(`could not update major_version in ${f}\n${recovery}`);
+  Deno.writeTextFileSync(`${f}.bak`, cfgText);
+  Deno.writeTextFileSync(f, bumped);
+
+  // 4. drop the DB volume so the stack recreates it on the new PG version
+  console.log(`>> [4/6] dropping volume ${volume}`);
+  const rm = await runCapture("docker", ["volume", "rm", volume]);
+  if (rm.code !== 0) {
+    die(
+      `failed to drop volume ${volume} (is the stack fully stopped?).\n` +
+        `  recover config: mv ${f}.bak ${f}\n${recovery}`,
+    );
+  }
+
+  // 5. start fresh (new PG version; supabase applies migrations)
+  console.log(`>> [5/6] starting ${p} on Postgres ${to}`);
+  await startStack(p); // dies on failure
+
+  // 6. restore the data snapshot (project's schema prep via restore.pre)
+  console.log(`>> [6/6] restoring data`);
+  const container = await dbContainer(lbl);
+  if (!container) {
+    die(`stack up but no db container found — reload manually: supa restore ${p} ${payload}`);
+  }
+  const hooks = readHooks(wd);
+  if (hooks.restorePre) await runHook("restore.pre", hooks.restorePre, wd);
+  const code = await runStdinFile("docker", psqlArgs(container, "postgres", true), payload);
+  if (code !== 0) {
+    die(
+      `data restore failed (psql exit ${code}). The stack is up on Postgres ${to} but empty.\n` +
+        `  reload manually: supa restore ${p} ${payload}\n` +
+        `  (usually a restore.pre hook to build the schema first is what's missing.)`,
+    );
+  }
+  if (hooks.restorePost) await runHook("restore.post", hooks.restorePost, wd);
+  console.log(`✓ upgraded ${p} to Postgres ${to}  (snapshot kept: ${payload})`);
 }
 export function cmdHelp(): void {
   const defHome = OS === "windows" ? "%APPDATA%\\supa" : "~/.config/supa";
@@ -812,6 +935,7 @@ export function cmdHelp(): void {
   supa rotate <p> [--yes]       new JWT signing key + restart (invalidates tokens)
   supa backup <p> [--data-only] [--out <dir>]  dump the DB → <name>_<ts>.sql
   supa restore <p> <file>|--latest [--yes]     load a dump into the live DB (atomic)
+  supa upgrade <p> --to <ver> [--dry-run]      Postgres major upgrade (snapshot+restore)
   supa status                   raw docker view, grouped by project
   supa stats                    CPU/MEM per container + per-stack & total RAM
   supa logs <p> [svc] [-f]      tail a stack's container logs

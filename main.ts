@@ -32,6 +32,7 @@ import {
   cmdStatus,
   cmdSwitch,
   cmdUp,
+  cmdUpgrade,
 } from "./src/commands.ts";
 
 const VERSION = "0.1.0"; // keep in sync with deno.json + CHANGELOG
@@ -69,6 +70,9 @@ async function main(): Promise<void> {
       break;
     case "restore":
       await cmdRestore(rest);
+      break;
+    case "upgrade":
+      await cmdUpgrade(rest);
       break;
     case "status":
     case "ps":
