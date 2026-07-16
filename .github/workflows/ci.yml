@@ -14,7 +14,13 @@ permissions:
 
 jobs:
   check:
-    runs-on: ubuntu-latest
+    # Both OSes: supa ships a Windows binary, so path handling, spawning, and the
+    # test suite must be proven on Windows too — not just assumed from Linux.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: denoland/setup-deno@v2
@@ -25,12 +31,14 @@ jobs:
       - name: Lint
         run: deno lint
       - name: Type-check
-        run: deno check main.ts cli_test.ts src/*.ts
+        run: deno check main.ts cli_test.ts build.ts src/*.ts
       - name: Test
         run: deno test -A
       - name: Shell scripts (shellcheck)
-        run: shellcheck build.sh install.sh
+        if: runner.os == 'Linux'
+        run: shellcheck install.sh
       - name: PowerShell script (PSScriptAnalyzer)
+        if: runner.os == 'Windows'
         shell: pwsh
         run: |
           Set-PSRepository PSGallery -InstallationPolicy Trusted
