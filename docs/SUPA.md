@@ -41,7 +41,7 @@ The person running it needs nothing installed beyond **Docker** and the
 | ---------------------- | ---------------------------------------------------------------- | ------- |
 | `main.ts`              | thin CLI entry: parse the verb, dispatch into `src/`             | yes     |
 | `src/`                 | the implementation (util → parse → config → supabase → commands) | yes     |
-| `build.sh`             | compiles `main.ts` → `dist/supa` + `dist/supa.exe`               | yes     |
+| `build.ts`             | compiles `main.ts` → `dist/supa` + `dist/supa.exe` (any OS)      | yes     |
 | `dist/`                | compiled binaries (~65–77 MB each)                               | **no**  |
 | `supa.registry`        | **the config you maintain**: `name\|path` per project            | yes     |
 | `supa.config`          | machine-local setting (`max_active`)                             | **no**  |
@@ -289,11 +289,14 @@ Needs **Deno** on the build machine only (`deno compile` bundles the runtime, so
 the _running_ machine needs nothing). Install it from https://deno.com.
 
 ```sh
-./build.sh            # → dist/supa (this host) + dist/supa.exe (Windows x64)
-./build.sh host       # only this host
-./build.sh windows    # only the Windows .exe
-./build.sh release    # ALL platforms as dist/supa-<target>[.exe] (what CI runs)
+deno task build                # → dist/supa (this host) + dist/supa.exe (Windows x64)
+deno run -A build.ts host      # only this host
+deno run -A build.ts windows   # only the Windows .exe
+deno run -A build.ts release   # ALL platforms as dist/supa-<target>[.exe] (what CI runs)
 ```
+
+The build script is itself a Deno script (`build.ts`), so it runs identically on
+macOS, Linux, and Windows — no bash required.
 
 ### macOS / Linux
 
@@ -417,7 +420,7 @@ state before doing anything.
 - **Never edit ports/labels expecting supa to store them** — they live in
   `config.toml`; supa derives them every call.
 - **Never hand-edit the compiled binary.** Change the source under `src/` (or
-  `main.ts`), then `./build.sh`.
+  `main.ts`), then `deno task build`.
 
 ### Verifying a change to supa itself
 

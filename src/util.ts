@@ -1,5 +1,9 @@
 // Small cross-platform path / fs / format helpers. Leaf module — no supa imports.
-// Forward slashes work on every OS in Deno.
+// Path building delegates to @std/path so separators are OS-native (a hand-rolled
+// forward-slash join worked, but printed mixed separators in every message on
+// Windows and broke UNC paths by collapsing the leading "\\").
+
+import { dirname, join as stdJoin } from "@std/path";
 
 export const OS = Deno.build.os; // "darwin" | "linux" | "windows"
 
@@ -7,12 +11,11 @@ export function home(): string {
   return Deno.env.get("HOME") ?? Deno.env.get("USERPROFILE") ?? ".";
 }
 export function join(...parts: string[]): string {
-  return parts.filter((p) => p.length > 0).join("/").replace(/\/{2,}/g, "/");
+  const filled = parts.filter((p) => p.length > 0);
+  return filled.length === 0 ? "" : stdJoin(filled[0], ...filled.slice(1));
 }
 export function parentDir(p: string): string {
-  const norm = p.replace(/\\/g, "/");
-  const i = norm.lastIndexOf("/");
-  return i <= 0 ? "." : norm.slice(0, i);
+  return dirname(p);
 }
 export function expandTilde(p: string): string {
   if (p === "~") return home();

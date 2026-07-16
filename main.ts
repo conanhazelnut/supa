@@ -4,7 +4,7 @@
  * supa — cross-platform manager for local Supabase stacks (one per project).
  *
  * Thin entry point: parse the verb and dispatch. Compiled to native binaries
- * with `deno compile` (see build.sh) — `supa` (macOS/Linux) and `supa.exe`
+ * with `deno compile` (see build.ts) — `supa` (macOS/Linux) and `supa.exe`
  * (Windows). The person running it needs nothing installed beyond Docker and the
  * Supabase CLI, because supa is a coordinator, not a container runtime.
  *

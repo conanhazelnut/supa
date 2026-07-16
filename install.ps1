@@ -63,12 +63,30 @@ if ($env:SUPA_SKIP_CHECKSUM -eq "1") {
 New-Item -ItemType Directory -Force -Path $binDir | Out-Null
 Move-Item -Force $tmp "$binDir\supa.exe"
 
-# Add install dir to the user PATH if it's not there yet.
-$userPath = [Environment]::GetEnvironmentVariable("Path", "User")
-if (($userPath -split ';') -notcontains $binDir) {
-  $newPath = if ([string]::IsNullOrEmpty($userPath)) { $binDir } else { "$userPath;$binDir" }
-  [Environment]::SetEnvironmentVariable("Path", $newPath, "User")
-  Write-Host "supa: added $binDir to your user PATH (restart the terminal to pick it up)"
+# Add install dir to the user PATH if it's not there yet. Read/write the registry
+# value directly instead of [Environment]::SetEnvironmentVariable: that API expands
+# REG_EXPAND_SZ entries (e.g. %JAVA_HOME%\bin) on read and writes them back
+# flattened as REG_SZ, silently breaking other tools' PATH entries.
+$envKey = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey("Environment", $true)
+try {
+  $userPath = [string]$envKey.GetValue("Path", "",
+    [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+  $expanded = $userPath -split ';' | ForEach-Object { [Environment]::ExpandEnvironmentVariables($_) }
+  if ($expanded -notcontains $binDir) {
+    $newPath = if ([string]::IsNullOrEmpty($userPath)) { $binDir } else { "$userPath;$binDir" }
+    $kind = [Microsoft.Win32.RegistryValueKind]::ExpandString
+    try { $kind = $envKey.GetValueKind("Path") } catch { }
+    $envKey.SetValue("Path", $newPath, $kind)
+    Write-Host "supa: added $binDir to your user PATH (restart the terminal to pick it up)"
+    # Broadcast WM_SETTINGCHANGE so newly opened shells see the PATH without a
+    # logoff ([Environment]::SetEnvironmentVariable did this; a raw write doesn't).
+    $sig = '[DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Auto)] public static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint Msg, UIntPtr wParam, string lParam, uint fuFlags, uint uTimeout, out UIntPtr lpdwResult);'
+    $win32 = Add-Type -MemberDefinition $sig -Name "EnvBroadcast" -Namespace "Supa" -PassThru
+    [UIntPtr]$result = [UIntPtr]::Zero
+    $null = $win32::SendMessageTimeout([IntPtr]0xFFFF, 0x001A, [UIntPtr]::Zero, "Environment", 2, 5000, [ref]$result)
+  }
+} finally {
+  $envKey.Close()
 }
 
 # Seed a starter registry if none exists (never overwrites).

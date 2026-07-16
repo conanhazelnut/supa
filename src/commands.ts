@@ -348,8 +348,11 @@ export async function cmdAdd(rest: string[]): Promise<void> {
     }
   }
   const wd = cfgDir(name);
-  if (wd) console.log(`  config: ${wd}/supabase/config.toml (label: ${labelOf(name) ?? "?"})`);
-  else console.error(`  note: no supabase/config.toml found under it yet`);
+  if (wd) {
+    console.log(
+      `  config: ${join(wd, "supabase", "config.toml")} (label: ${labelOf(name) ?? "?"})`,
+    );
+  } else console.error(`  note: no supabase/config.toml found under it yet`);
   if (!init) {
     const s = nextFreeSlot();
     if (s) console.log(`  next free port band: 543${s}X  (apply: supa ports ${name} ${s})`);
@@ -1026,6 +1029,9 @@ export async function cmdPrune(rest: string[]): Promise<void> {
 }
 export function cmdHelp(): void {
   const defHome = OS === "windows" ? "%APPDATA%\\supa" : "~/.config/supa";
+  const oneOff = OS === "windows"
+    ? "'$env:SUPA_MAX_ACTIVE=2; supa up <p>'"
+    : "'SUPA_MAX_ACTIVE=2 supa up <p>'";
   console.log(
     `supa — run local Supabase stacks (CLI-backed, cross-platform, no compose)
 
@@ -1054,7 +1060,7 @@ export function cmdHelp(): void {
   supa help                     this
 
 * max-active defaults to 1. Raise it: 'supa config max-active 2', or one-off
-  'SUPA_MAX_ACTIVE=2 supa up <p>'. 'SUPA_ALLOW_MULTI=1' means unlimited.
+  ${oneOff}. SUPA_ALLOW_MULTI=1 means unlimited.
 
 Config lives in SUPA_HOME (default ${defHome}): supa.registry (name|path) +
 supa.config. Override with SUPA_HOME / SUPA_REGISTRY / SUPA_CONFIG.

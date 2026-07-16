@@ -53,7 +53,7 @@ For contributors, or platforms without a prebuilt binary. Needs
 
 ```sh
 git clone https://github.com/conanhazelnut/supa.git && cd supa
-./build.sh                                 # → dist/supa (+ dist/supa.exe)
+deno task build                            # → dist/supa (+ dist/supa.exe), any OS
 ln -sf "$PWD/dist/supa" ~/.local/bin/supa  # put it on PATH (macOS/Linux)
 ```
 

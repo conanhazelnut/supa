@@ -1,9 +1,11 @@
-// Tests for supa's pure parsing/formatting logic. Zero dependencies — a tiny
-// inline assert keeps the whole project dependency-free.  Run: deno test
+// Tests for supa's pure parsing/formatting logic. No test framework — a tiny
+// inline assert is all the harness this needs.  Run: deno test
+import { SEPARATOR as SEP } from "@std/path";
 import {
   escapeRegExp,
   expandTilde,
   fmtMiB,
+  home,
   join,
   maskSecret,
   memToMiB,
@@ -38,21 +40,24 @@ function ok(cond: boolean, msg = "expected true"): void {
 }
 
 // ---------- path helpers ------------------------------------------------------
-Deno.test("join collapses slashes and drops empties", () => {
-  eq(join("a", "b", "c"), "a/b/c");
-  eq(join("a", "", "c"), "a/c");
-  eq(join("a/", "/b"), "a/b");
+Deno.test("join uses the OS separator, collapses slashes, drops empties", () => {
+  eq(join("a", "b", "c"), `a${SEP}b${SEP}c`);
+  eq(join("a", "", "c"), `a${SEP}c`);
+  eq(join("a/", "/b"), `a${SEP}b`);
 });
 Deno.test("parentDir", () => {
-  eq(parentDir("/a/b/c"), "/a/b");
-  eq(parentDir("a\\b\\c"), "a/b"); // backslashes normalized
+  eq(parentDir(join("a", "b", "c")), join("a", "b"));
   eq(parentDir("file"), ".");
+  if (Deno.build.os === "windows") {
+    eq(parentDir("C:\\a\\b"), "C:\\a");
+    eq(parentDir("\\\\server\\share\\dir"), "\\\\server\\share\\"); // UNC root survives
+  }
 });
 Deno.test("expandTilde", () => {
   eq(expandTilde("/abs/path"), "/abs/path"); // no tilde -> unchanged
   eq(expandTilde("relative"), "relative");
-  ok(!expandTilde("~/x").startsWith("~"), "~ should expand");
-  ok(expandTilde("~/x").endsWith("/x"));
+  eq(expandTilde("~/x"), join(home(), "x"));
+  eq(expandTilde("~"), home());
 });
 
 // ---------- registry ----------------------------------------------------------
@@ -64,7 +69,7 @@ Deno.test("parseRegistry skips comments/blanks/malformed", () => {
 });
 Deno.test("parseRegistry expands a leading tilde", () => {
   const reg = parseRegistry("x|~/proj");
-  ok(reg[0].root.endsWith("/proj") && !reg[0].root.startsWith("~"));
+  eq(reg[0].root, join(home(), "proj"));
 });
 
 // ---------- config.toml -------------------------------------------------------
@@ -261,7 +266,7 @@ Deno.test("backupFileName: full has no type suffix, parts do", () => {
 Deno.test("resolveBackupDir precedence: out > configured > project/backups", () => {
   eq(resolveBackupDir({ out: "/x", configured: "/y", projectRoot: "/z" }), "/x");
   eq(resolveBackupDir({ configured: "/y", projectRoot: "/z" }), "/y");
-  eq(resolveBackupDir({ projectRoot: "/z" }), "/z/backups");
+  eq(resolveBackupDir({ projectRoot: "/z" }), join("/z", "backups"));
   ok(!resolveBackupDir({ out: "~/b" }).startsWith("~"), "expands a leading ~");
 });
 Deno.test("resolveBackupDir throws when nothing resolves", () => {

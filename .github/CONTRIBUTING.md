@@ -50,4 +50,4 @@ push/PR triggers.
 
 Tag `vX.Y.Z`; CI (`.github/workflows/release.yml`) cross-compiles every platform,
 writes `SHA256SUMS.txt`, and attaches them to the GitHub Release. To cut one by
-hand: `./build.sh release` then `gh release create vX.Y.Z dist/supa-* dist/SHA256SUMS.txt`.
+hand: `deno run -A build.ts release` then `gh release create vX.Y.Z dist/supa-* dist/SHA256SUMS.txt`.

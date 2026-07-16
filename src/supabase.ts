@@ -9,11 +9,17 @@ export const SUPABASE_MISSING =
 export function which(cmd: string): string | null {
   const pathEnv = Deno.env.get("PATH") ?? "";
   const sep = OS === "windows" ? ";" : ":";
-  const cands = OS === "windows" ? [`${cmd}.exe`, `${cmd}.cmd`, cmd] : [cmd];
-  for (const dir of pathEnv.split(sep)) {
+  // On Windows resolve like cmd.exe does: try each PATHEXT extension in order
+  // (.exe, .cmd, .bat, …), then the bare name. PATH entries may be quoted.
+  const exts = OS === "windows"
+    ? (Deno.env.get("PATHEXT") ?? ".EXE;.CMD;.BAT;.COM").split(";").filter(Boolean)
+    : [];
+  const cands = OS === "windows" ? [...exts.map((e) => cmd + e.toLowerCase()), cmd] : [cmd];
+  for (const raw of pathEnv.split(sep)) {
+    const dir = raw.replace(/"/g, "");
     if (!dir) continue;
     for (const c of cands) {
-      const full = join(dir.replace(/\\/g, "/"), c);
+      const full = join(dir, c);
       if (isFile(full)) return full;
     }
   }
@@ -195,9 +201,14 @@ export async function guard(name: string): Promise<void> {
   console.error(`supa: max-active limit reached (${max}${from}) — already running:`);
   for (const l of others) console.error(`  - ${nameForLabel(l) ?? l} (${l})`);
   console.error("");
+  // The one-off hint must be copy-pasteable in the user's actual shell.
+  const n = others.length + 1;
+  const oneOff = OS === "windows"
+    ? `$env:SUPA_MAX_ACTIVE=${n}; supa up ${name}`
+    : `SUPA_MAX_ACTIVE=${n} supa up ${name}`;
   console.error(`  free a slot:       supa down <name>`);
   console.error(`  swap to '${name}':   supa switch ${name}   (stops others, runs only this)`);
-  console.error(`  raise the limit:   supa config max-active ${others.length + 1}`);
-  console.error(`  or one-off:        SUPA_MAX_ACTIVE=${others.length + 1} supa up ${name}`);
+  console.error(`  raise the limit:   supa config max-active ${n}`);
+  console.error(`  or one-off:        ${oneOff}`);
   Deno.exit(1);
 }
