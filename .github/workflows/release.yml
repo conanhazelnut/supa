@@ -4,6 +4,10 @@ name: release
 # via workflow_dispatch — to build every platform binary, write SHA256SUMS.txt,
 # and attach them to the GitHub Release. The install scripts download and verify
 # those artifacts, so users never compile.
+#
+# Runs on windows-latest (deno cross-compiles every target from any OS) so the
+# Windows exe's VERSIONINFO resource can be stamped natively with rcedit — an
+# unsigned 77 MB exe with empty metadata is what AV heuristics flag first.
 
 on:
   push:
@@ -15,15 +19,20 @@ permissions:
   id-token: write
   attestations: write
 
+env:
+  # Pin the exact toolchain: a floating v2.x would silently change the bundled
+  # runtime between releases. Keep in sync with ci.yml.
+  DENO_VERSION: "2.9.3"
+
 jobs:
   release:
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
 
       - uses: denoland/setup-deno@v2
         with:
-          deno-version: v2.x
+          deno-version: ${{ env.DENO_VERSION }}
 
       - name: Verify
         run: |
@@ -34,6 +43,7 @@ jobs:
 
       - name: Version consistency
         if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
         run: |
           tag="${GITHUB_REF_NAME#v}"
           src=$(grep -oE 'const VERSION = "[0-9]+\.[0-9]+\.[0-9]+"' main.ts | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
@@ -42,7 +52,30 @@ jobs:
           test "$tag" = "$src" && test "$tag" = "$cfg" || { echo "::error::version mismatch"; exit 1; }
 
       - name: Build all targets + checksums
-        run: deno run -A build.ts release # deno cross-compiles every target from Linux
+        run: deno run -A build.ts release # deno cross-compiles every target
+
+      - name: Stamp Windows VERSIONINFO (rcedit) + final checksums
+        shell: pwsh
+        run: |
+          $ver = (Get-Content deno.json | ConvertFrom-Json).version
+          Invoke-WebRequest -Uri "https://github.com/electron/rcedit/releases/download/v2.0.0/rcedit-x64.exe" -OutFile rcedit.exe
+          $hash = (Get-FileHash rcedit.exe -Algorithm SHA256).Hash.ToLower()
+          if ($hash -ne "3e7801db1a5edbec91b49a24a094aad776cb4515488ea5a4ca2289c400eade2a") {
+            throw "rcedit checksum mismatch: $hash"
+          }
+          .\rcedit.exe dist\supa-x86_64-pc-windows-msvc.exe `
+            --set-file-version $ver --set-product-version $ver `
+            --set-version-string ProductName "supa" `
+            --set-version-string FileDescription "supa - local Supabase stack manager" `
+            --set-version-string OriginalFilename "supa.exe" `
+            --set-version-string CompanyName "conanhazelnut" `
+            --set-version-string LegalCopyright "Apache-2.0 (c) conanhazelnut"
+          # Sanity: the patched exe must still run (deno stores its bundle in a PE
+          # resource, so rcedit is safe — but verify, don't assume).
+          $out = & dist\supa-x86_64-pc-windows-msvc.exe version
+          if ($out -ne "supa $ver") { throw "patched exe broken or wrong version: '$out'" }
+          # Re-checksum AFTER patching so SHA256SUMS matches the shipped bytes.
+          deno run -A build.ts checksums
 
       - name: Attest build provenance
         if: startsWith(github.ref, 'refs/tags/')

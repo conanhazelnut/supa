@@ -62,6 +62,9 @@ if ($env:SUPA_SKIP_CHECKSUM -eq "1") {
 
 New-Item -ItemType Directory -Force -Path $binDir | Out-Null
 Move-Item -Force $tmp "$binDir\supa.exe"
+# Strip Mark-of-the-Web: the download is already checksum-verified above, so
+# SmartScreen second-guessing the Zone.Identifier stream adds no protection.
+Unblock-File -Path "$binDir\supa.exe" -ErrorAction SilentlyContinue
 
 # Add install dir to the user PATH if it's not there yet. Read/write the registry
 # value directly instead of [Environment]::SetEnvironmentVariable: that API expands

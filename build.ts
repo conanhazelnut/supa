@@ -56,20 +56,30 @@ async function buildWindows(): Promise<void> {
   console.log("▶ windows (x86_64) → dist/supa.exe");
   await compile("dist/supa.exe", "x86_64-pc-windows-msvc");
 }
+// sha256sum-compatible lines ("<hash>  <file>") — install.sh/install.ps1 parse this.
+// Standalone mode too (`build.ts checksums`): release CI re-runs it after patching
+// the Windows exe's version resources, so SHA256SUMS matches the shipped bytes.
+async function writeChecksums(): Promise<void> {
+  console.log("▶ checksums → dist/SHA256SUMS.txt");
+  const names = [...Deno.readDirSync("dist")]
+    .filter((e) => e.isFile && e.name.startsWith("supa-"))
+    .map((e) => e.name)
+    .sort();
+  if (names.length === 0) {
+    console.error("build: no dist/supa-* release artifacts to checksum (run `build.ts release`)");
+    Deno.exit(1);
+  }
+  const lines = await Promise.all(names.map(async (n) => `${await sha256Hex(`dist/${n}`)}  ${n}`));
+  Deno.writeTextFileSync("dist/SHA256SUMS.txt", lines.join("\n") + "\n");
+}
+
 async function buildRelease(): Promise<void> {
   for (const t of TARGETS) {
     const out = `dist/supa-${t}${t.includes("windows") ? ".exe" : ""}`;
     console.log(`▶ ${t} → ${out}`);
     await compile(out, t);
   }
-  // sha256sum-compatible lines ("<hash>  <file>") — install.sh/install.ps1 parse this.
-  console.log("▶ checksums → dist/SHA256SUMS.txt");
-  const names = [...Deno.readDirSync("dist")]
-    .filter((e) => e.isFile && e.name.startsWith("supa-"))
-    .map((e) => e.name)
-    .sort();
-  const lines = await Promise.all(names.map(async (n) => `${await sha256Hex(`dist/${n}`)}  ${n}`));
-  Deno.writeTextFileSync("dist/SHA256SUMS.txt", lines.join("\n") + "\n");
+  await writeChecksums();
 }
 
 async function main(): Promise<void> {
@@ -91,8 +101,11 @@ async function main(): Promise<void> {
     case "release":
       await buildRelease();
       break;
+    case "checksums":
+      await writeChecksums();
+      return; // no dist listing — the artifacts were already reported by the build
     default:
-      console.error("usage: deno run -A build.ts [host|windows|all|release]");
+      console.error("usage: deno run -A build.ts [host|windows|all|release|checksums]");
       Deno.exit(1);
   }
   console.log("✓ done:");
