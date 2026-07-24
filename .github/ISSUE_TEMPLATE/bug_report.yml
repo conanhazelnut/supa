@@ -1,0 +1,43 @@
+name: Bug report
+description: Something in supa doesn't work as expected
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What did you run, what did you expect, what happened instead?
+      placeholder: |
+        $ supa up web
+        ...
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: supa version
+      description: Output of `supa help` first line, or the release tag you installed.
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: OS
+      options: [macOS (Apple Silicon), macOS (Intel), Linux, Windows]
+    validations:
+      required: true
+  - type: textarea
+    id: env
+    attributes:
+      label: Environment
+      description: "`docker --version`, `supabase --version`, and `supa doctor` output."
+      render: shell
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: Docker is running and the Supabase CLI is on my PATH.
+          required: true
+        - label: I searched existing issues.
+          required: true

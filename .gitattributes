@@ -1,0 +1,3 @@
+# Force LF on checkout so the shell scripts (install.sh, .githooks/*) run
+# correctly even when the repo is cloned on Windows.
+* text=auto eol=lf

@@ -1,0 +1,50 @@
+name: ci
+
+# Runs the same checks as the local pre-push hook (`.githooks/pre-push`,
+# activate with `deno task hooks`) — the hook catches problems before a push,
+# CI proves them on a clean machine and on both OSes.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    # Both OSes: supa ships a Windows binary, so path handling, spawning, and the
+    # test suite must be proven on Windows too — not just assumed from Linux.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: denoland/setup-deno@v2
+        with:
+          # Pinned exact — a floating v2.x would let the toolchain drift between
+          # runs. Keep in sync with release.yml (DENO_VERSION).
+          deno-version: "2.9.3"
+      - name: Format
+        run: deno fmt --check
+      - name: Lint
+        run: deno lint
+      - name: Type-check
+        run: deno check main.ts cli_test.ts build.ts src/*.ts
+      - name: Test
+        run: deno test -A
+      - name: Shell scripts (shellcheck)
+        if: runner.os == 'Linux'
+        run: shellcheck install.sh
+      - name: PowerShell script (PSScriptAnalyzer)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Set-PSRepository PSGallery -InstallationPolicy Trusted
+          Install-Module PSScriptAnalyzer -Scope CurrentUser -Force
+          $issues = Invoke-ScriptAnalyzer -Path install.ps1
+          $issues | Format-Table -AutoSize
+          if ($issues | Where-Object Severity -eq 'Error') { throw 'PSScriptAnalyzer found errors' }

@@ -1,0 +1,20 @@
+#!/usr/bin/env sh
+# Local gate — runs the same checks GitHub CI does (.github/workflows/ci.yml),
+# so problems are caught before the push instead of in a red Actions run.
+#
+# Tracked in-repo + activated per clone with:  git config core.hooksPath .githooks
+# (or `deno task hooks`). Works on macOS/Linux and Windows git (bundled sh).
+set -e
+cd "$(git rev-parse --show-toplevel)"
+
+echo "▶ pre-push: deno task ok  (fmt · lint · check · test)"
+deno task ok
+
+if command -v shellcheck >/dev/null 2>&1; then
+  echo "▶ pre-push: shellcheck"
+  shellcheck install.sh
+else
+  echo "  (shellcheck not installed — skipping shell lint)"
+fi
+
+echo "✓ pre-push checks passed"

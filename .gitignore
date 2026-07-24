@@ -1,0 +1,25 @@
+# Local machine state — ship the .example files, keep yours private
+supa.registry
+supa.config
+
+# Build output
+dist/
+
+# Secrets — never commit
+**/signing_keys.json
+.env
+.env.*
+
+# Editor / AI-assistant working files
+.claude/
+CLAUDE.md
+notes/
+*.local.md
+.mcp.json
+.idea/
+*.swp
+
+# OS noise
+.DS_Store
+Thumbs.db
+desktop.ini

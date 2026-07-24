@@ -1,0 +1,94 @@
+// Small cross-platform path / fs / format helpers. Leaf module — no supa imports.
+// Path building delegates to @std/path so separators are OS-native (a hand-rolled
+// forward-slash join worked, but printed mixed separators in every message on
+// Windows and broke UNC paths by collapsing the leading "\\").
+
+import { dirname, join as stdJoin } from "@std/path";
+
+export const OS = Deno.build.os; // "darwin" | "linux" | "windows"
+
+export const VERSION = "0.1.0"; // keep in sync with deno.json + CHANGELOG
+export const REPO = "conanhazelnut/supa";
+
+// User-facing docs live in the repo, which a binary install doesn't have — every
+// runtime message must link the full GitHub URL, never a repo-relative path.
+export const DOCS_URL = `https://github.com/${REPO}/blob/main/docs`;
+
+export function home(): string {
+  return Deno.env.get("HOME") ?? Deno.env.get("USERPROFILE") ?? ".";
+}
+export function join(...parts: string[]): string {
+  const filled = parts.filter((p) => p.length > 0);
+  return filled.length === 0 ? "" : stdJoin(filled[0], ...filled.slice(1));
+}
+export function parentDir(p: string): string {
+  return dirname(p);
+}
+export function expandTilde(p: string): string {
+  if (p === "~") return home();
+  if (p.startsWith("~/") || p.startsWith("~\\")) return join(home(), p.slice(2));
+  return p;
+}
+// Decode file bytes to text, honouring a UTF-16 BOM. Windows PowerShell 5.1's
+// `>` / Out-File write UTF-16LE by default, and decoding that as UTF-8 turns a
+// hand-made registry/config into NUL-riddled garbage that parses as nothing.
+// UTF-8 (with or without BOM) stays the default everywhere else.
+export function decodeText(bytes: Uint8Array): string {
+  if (bytes.length >= 2) {
+    if (bytes[0] === 0xff && bytes[1] === 0xfe) return new TextDecoder("utf-16le").decode(bytes);
+    if (bytes[0] === 0xfe && bytes[1] === 0xff) return new TextDecoder("utf-16be").decode(bytes);
+  }
+  return new TextDecoder().decode(bytes);
+}
+// Drop-in for Deno.readTextFileSync wherever the file may be user-authored.
+export function readTextFile(p: string): string {
+  return decodeText(Deno.readFileSync(p));
+}
+export function isFile(p: string): boolean {
+  try {
+    return Deno.statSync(p).isFile;
+  } catch {
+    return false;
+  }
+}
+export function isDir(p: string): boolean {
+  try {
+    return Deno.statSync(p).isDirectory;
+  } catch {
+    return false;
+  }
+}
+export function die(msg: string): never {
+  console.error(`supa: ${msg}`);
+  Deno.exit(1);
+}
+// Escape a string for safe interpolation into a RegExp.
+export function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+// Parse a docker MemUsage value ("120MiB", "7.6GiB", …) into MiB.
+export function memToMiB(s: string): number {
+  const m = s.trim().match(/^([\d.]+)\s*([KMGT]?i?B)$/i);
+  if (!m) return 0;
+  const mult: Record<string, number> = {
+    B: 1 / (1024 * 1024),
+    KB: 1 / 1024,
+    KIB: 1 / 1024,
+    MB: 1,
+    MIB: 1,
+    GB: 1024,
+    GIB: 1024,
+    TB: 1024 * 1024,
+    TIB: 1024 * 1024,
+  };
+  return parseFloat(m[1]) * (mult[m[2].toUpperCase()] ?? 1);
+}
+export function fmtMiB(mib: number): string {
+  return mib >= 1024 ? `${(mib / 1024).toFixed(1)}GiB` : `${Math.round(mib)}MiB`;
+}
+export function maskSecret(key: string, val: string): string {
+  if (/KEY|SECRET|TOKEN|PASSWORD|JWT/i.test(key) && val.length > 10) {
+    return `${val.slice(0, 4)}…${val.slice(-4)}`;
+  }
+  return val;
+}
