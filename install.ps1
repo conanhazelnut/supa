@@ -40,7 +40,9 @@ if ($env:SUPA_SKIP_CHECKSUM -eq "1") {
 } else {
   $expected = $null
   try {
-    $sums = (Invoke-WebRequest -Uri $sumsUrl -UseBasicParsing).Content
+    $raw = (Invoke-WebRequest -Uri $sumsUrl -UseBasicParsing).Content
+    # PS 5.1 returns .Content as byte[] for octet-stream release assets — decode to text
+    if ($raw -is [byte[]]) { $sums = [Text.Encoding]::UTF8.GetString($raw) } else { $sums = [string]$raw }
     foreach ($line in ($sums -split "\r?\n")) {
       $parts = $line -split '\s+'
       if ($parts.Length -ge 2 -and $parts[1] -eq $asset) { $expected = $parts[0].ToLower() }
