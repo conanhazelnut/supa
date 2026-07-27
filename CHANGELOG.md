@@ -4,12 +4,20 @@ All notable changes to supa are documented here. This project adheres to
 [Semantic Versioning](https://semver.org/) and
 [Keep a Changelog](https://keepachangelog.com/).
 
-## [Unreleased]
+## [0.1.2] — 2026-07-28
+
+Security hardening pass: secret files are owner-only, two injection vectors are
+closed defense-in-depth, and the security policy now tells the truth about
+networking and hook trust.
 
 ### Added
 
 - `supa doctor` lists registry lines ignored by the name-charset rule, so a
   hand-edited project can't vanish silently.
+
+### Fixed
+
+- `supa park` no longer announces discovered subdirs the registry would reject.
 
 ### Security
 
@@ -97,5 +105,6 @@ Supabase stacks (one per project) on top of the official Supabase CLI.
   with checksum verification and a signed build-provenance attestation. Unit +
   CLI integration tests; CI runs fmt / lint / check / test on Linux and Windows.
 
+[0.1.2]: https://github.com/conanhazelnut/supa/releases/tag/v0.1.2
 [0.1.1]: https://github.com/conanhazelnut/supa/releases/tag/v0.1.1
 [0.1.0]: https://github.com/conanhazelnut/supa/releases/tag/v0.1.0
