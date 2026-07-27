@@ -14,12 +14,17 @@ import {
 } from "./util.ts";
 import {
   applyEnvMap,
+  attributeUntagged,
   backupFileName,
   ensureSigningKeysPath,
+  foreignSlotHolders,
+  imageInUse,
+  isSupabaseRepo,
   latestBackup,
   mergeDotenv,
   parseEnvMap,
   parseHooks,
+  parseImageRows,
   parseLabel,
   parseLimits,
   parseMajorVersion,
@@ -404,6 +409,74 @@ Deno.test("setMajorVersion bumps [db] in place, leaves other tables + reports ch
 Deno.test("setMajorVersion is a no-op when already at target", () => {
   const { changed } = setMajorVersion(DBCFG, "17");
   eq(changed, false);
+});
+
+// ---------- docker scope attribution ------------------------------------------
+// TEETH: these decide what supa may delete on a shared docker host. Loosen them and
+// prune reaches another project's images — REVERT any of these → RED.
+Deno.test("isSupabaseRepo accepts only a supabase namespace", () => {
+  ok(isSupabaseRepo("supabase/postgres"), "docker hub");
+  ok(isSupabaseRepo("public.ecr.aws/supabase/kong"), "ecr mirror");
+  ok(isSupabaseRepo("ghcr.io/supabase/studio"), "ghcr");
+  eq(isSupabaseRepo("php"), false);
+  eq(isSupabaseRepo("library/php"), false);
+  eq(isSupabaseRepo("myorg/supabase-clone"), false); // namespace must match exactly
+  eq(isSupabaseRepo("postgres"), false); // bare official image is not ours
+  eq(isSupabaseRepo("<none>"), false);
+  eq(isSupabaseRepo(""), false);
+});
+Deno.test("parseImageRows tolerates blank/short lines", () => {
+  const rows = parseImageRows(
+    "abc123\tpublic.ecr.aws/supabase/postgres\t15.8.1\t3.2GB\n\nbad-line\ndef456\tphp\t8.3\t500MB\n",
+  );
+  eq(rows.length, 2);
+  eq(rows[0], {
+    id: "abc123",
+    repo: "public.ecr.aws/supabase/postgres",
+    tag: "15.8.1",
+    size: "3.2GB",
+  });
+  eq(rows[1].repo, "php");
+});
+Deno.test("attributeUntagged claims only images with a supabase repo digest", () => {
+  const { ours, others } = attributeUntagged(
+    `sha256:aaa\t["public.ecr.aws/supabase/gotrue@sha256:1"]\n` +
+      `sha256:bbb\t["php@sha256:2"]\n` +
+      `sha256:ccc\t[]\n` + // locally built php layer — no digest, never ours
+      `sha256:ddd\tnull\n` +
+      `sha256:eee\tnot-json\n`,
+  );
+  eq(ours, ["sha256:aaa"]);
+  eq(others, ["sha256:bbb", "sha256:ccc", "sha256:ddd", "sha256:eee"]);
+});
+Deno.test("imageInUse matches a container ref by tag or id", () => {
+  const row = {
+    id: "abc123def456",
+    repo: "public.ecr.aws/supabase/kong",
+    tag: "2.8.1",
+    size: "1GB",
+  };
+  ok(imageInUse(row, ["public.ecr.aws/supabase/kong:2.8.1"]), "repo:tag ref");
+  ok(imageInUse(row, ["sha256:abc123def456789"]), "sha-prefixed id ref");
+  ok(imageInUse(row, ["abc123def456"]), "bare id ref");
+  eq(imageInUse(row, ["php:8.3", ""]), false);
+});
+Deno.test("foreignSlotHolders maps 543XX bands to non-supabase containers only", () => {
+  const holders = foreignSlotHolders(
+    `php-web\t0.0.0.0:54331->80/tcp, :::54331->80/tcp\t\n` +
+      `supabase_kong_api\t0.0.0.0:54321->8000/tcp\tapi\n` + // labelled -> a supa stack
+      `redis\t0.0.0.0:6379->6379/tcp\t\n` + // outside the 543XX bands
+      `php-queue\t0.0.0.0:54339->9000/tcp\t\n` +
+      `exposed-only\t8080/tcp\t\n`, // not published -> no host port
+  );
+  eq([...holders.keys()].sort(), ["3"]);
+  eq(holders.get("3"), ["php-web", "php-queue"]);
+});
+Deno.test("foreignSlotHolders expands a published port range across bands", () => {
+  const holders = foreignSlotHolders(`gw\t0.0.0.0:54338-54352->80-94/tcp\t\n`);
+  eq([...holders.keys()].sort(), ["3", "4", "5"]);
+  eq(foreignSlotHolders(`gw\t0.0.0.0:1-65535->1-65535/tcp\t\n`).size, 10);
+  eq(foreignSlotHolders(`gw\t0.0.0.0:54400-54500->80/tcp\t\n`).size, 0); // outside 543XX
 });
 
 // ---------- resource limits ---------------------------------------------------

@@ -292,6 +292,19 @@ Deno.test("completion prints a script; help <cmd> prints topic help", async () =
   });
 });
 
+// TEETH: prune's help is the user-facing scope contract — supa must never offer to
+// remove another project's images or any volume. REVERT the scoping in cmdPrune and
+// the help text stops matching → RED.
+Deno.test("prune help states the Supabase-only scope", async () => {
+  await withHome(async (home) => {
+    const h = await runSupa(["help", "prune"], home);
+    ok(h.code === 0, h.err);
+    ok(/Supabase images only/.test(h.out), h.out);
+    ok(/reported, never\s+touched/.test(h.out), h.out);
+    ok(/Volumes are reported only/.test(h.out), h.out);
+  });
+});
+
 Deno.test("upgrade to a lower version is blocked unless --allow-downgrade", async () => {
   await withHome(async (home) => {
     const proj = await Deno.makeTempDir({ prefix: "supa-proj-" });

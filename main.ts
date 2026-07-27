@@ -118,7 +118,7 @@ async function main(): Promise<void> {
       cmdUnpark(rest);
       break;
     case "ports":
-      cmdPorts(rest);
+      await cmdPorts(rest);
       break;
     case "completion":
       cmdCompletion(rest);

@@ -2,6 +2,7 @@
 // (never through a shell), and the start/stop/guard lifecycle.
 import { die, escapeRegExp, home, isFile, join, OS } from "./util.ts";
 import { cfgDir, labelOf, names, readHooks, readLimits, readMaxActive, rootOf } from "./config.ts";
+import { foreignSlotHolders } from "./parse.ts";
 
 export const SUPABASE_MISSING =
   "Supabase CLI not found on PATH — install it: https://supabase.com/docs/guides/local-development";
@@ -118,6 +119,8 @@ export async function dbContainer(label: string): Promise<string | null> {
 export async function runningLabels(): Promise<string[]> {
   const { code, out } = await runCapture("docker", [
     "ps",
+    "--filter",
+    "label=com.supabase.cli.project",
     "--format",
     '{{.Label "com.supabase.cli.project"}}',
   ]);
@@ -132,6 +135,17 @@ export async function runningLabels(): Promise<string[]> {
 export function nameForLabel(label: string): string | null {
   for (const n of names()) if (labelOf(n) === label) return n;
   return null;
+}
+// 543xX bands currently published by non-Supabase containers, so supa never hands a
+// project a band another service is already on. Read-only; empty when docker is down.
+export async function foreignSlots(): Promise<Map<string, string[]>> {
+  const { code, out } = await runCapture("docker", [
+    "ps",
+    "--format",
+    '{{.Names}}\t{{.Ports}}\t{{.Label "com.supabase.cli.project"}}',
+  ]);
+  if (code !== 0) return new Map();
+  return foreignSlotHolders(out);
 }
 async function pinNoRestart(label: string): Promise<void> {
   const { code, out } = await runCapture("docker", [

@@ -200,9 +200,14 @@ export function slotOf(name: string): string | null {
   const m = (portOf(name, "api") ?? "").match(/^543(\d)\d$/);
   return m ? m[1] : null;
 }
-export function nextFreeSlot(): string | null {
+// alsoTaken: bands held by containers outside supa (see foreignSlots) — a project
+// put there would fight another service for the port.
+export function nextFreeSlot(alsoTaken: Set<string> = new Set()): string | null {
   const used = new Set(names().map(slotOf).filter((s): s is string => s !== null));
-  for (let d = 1; d <= 9; d++) if (!used.has(String(d))) return String(d);
+  for (let d = 1; d <= 9; d++) {
+    const s = String(d);
+    if (!used.has(s) && !alsoTaken.has(s)) return s;
+  }
   return null;
 }
 export function readEnvMap(cfgDirPath: string): Array<{ app: string; native: string }> {

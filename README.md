@@ -105,6 +105,10 @@ Destructive commands — `destroy` (deletes a stack's data) and `rotate`
   `backup_dir`).
 - Which services run, the Postgres version, and image versions live in each
   project's `config.toml` — supa reads it live; edit it, then `supa restart`.
+- **Only Supabase stacks are touched.** Every container / volume / image
+  operation is filtered by the Supabase CLI's project label or a Supabase image
+  repository, so other containers on the same Docker daemon are never stopped,
+  capped, or pruned ([scope](./docs/SUPA.md#scope--what-supa-touches-on-your-docker-host)).
 
 First-run walkthrough: **[QUICKSTART.md](./docs/QUICKSTART.md)** · full guide:
 **[SUPA.md](./docs/SUPA.md)** · port scheme: **[PORTS.md](./docs/PORTS.md)**.

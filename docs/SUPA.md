@@ -32,6 +32,49 @@ The person running it needs nothing installed beyond **Docker** and the
   the limit is reached. Raise it with `supa config max-active <n>`.
 - **`supa ls` is the live source of truth** for what's registered, its ports,
   and what's UP right now.
+- **supa only ever touches Supabase stacks.** Your other containers (a php
+  service, a redis, your own builds) share the Docker daemon and are never
+  started, stopped, capped, or deleted by supa. See [Scope](#scope--what-supa-touches-on-your-docker-host).
+
+---
+
+## Scope — what supa touches on your Docker host
+
+supa coordinates Supabase stacks on a Docker daemon it shares with everything
+else you run. The boundary is mechanical, not a promise: every container,
+volume, and image operation is filtered by the Supabase CLI's own project label
+(`com.supabase.cli.project`) or by a Supabase image repository.
+
+| supa does this                       | Scoped by                                  |
+| ------------------------------------ | ------------------------------------------ |
+| `up` / `down` / `restart` / `switch` | `supabase start\|stop --workdir <project>` |
+| `status` / `stats` / `logs`          | `label=com.supabase.cli.project`           |
+| `limit` (memory/cpu caps)            | `label=…=<project label>`                  |
+| `destroy` (volumes)                  | `label=…=<project label>`                  |
+| `pg-upgrade` (drops one volume)      | volume named `supabase_db_<label>`         |
+| `backup` / `restore` (psql)          | that stack's db container                  |
+| `prune` (images)                     | repositories under a `supabase` namespace  |
+
+Consequences worth knowing:
+
+- **`supa switch` leaves unknown stacks up.** It stops only running stacks that
+  are in your registry; a Supabase stack it doesn't manage gets a warning, not a
+  `stop`.
+- **`supa prune` never runs a host-wide `docker image prune`.** It removes
+  untagged images only when their repo digests prove they came from a Supabase
+  repository — a locally built layer has no digest and is therefore never
+  attributed to supa. Other projects' images are counted and left alone.
+- **supa never deletes a volume it doesn't manage.** `supa destroy` removes a
+  registered stack's data on a typed confirmation; orphan Supabase volumes (a
+  stack that isn't in your registry) are reported with the `docker volume rm`
+  command so the decision stays yours.
+- **Port bands are checked against other containers.** `supa ports` /
+  `supa add --init` skip a `543xX` band that a non-Supabase container already
+  publishes on, and `supa doctor` reports any overlap.
+- **Two things are deliberately unbounded**: your `supa.hooks` commands (they run
+  through your shell — that's the point), and RAM/CPU pressure on the shared
+  Docker VM. `supa.limits` caps Supabase containers only; nothing reserves
+  headroom for your other services, which is what `max_active` is for.
 
 ---
 
@@ -91,7 +134,7 @@ Same binary, same commands on every OS (`supa` on macOS/Linux, `supa.exe` /
 | `supa park [<dir>]` / `unpark`       | opt-in auto-discovery of supabase projects in a directory                |
 | `supa ports <name> [slot] [--force]` | re-band `543XX` ports to a free slot (auto-picks; `--force` to override) |
 | `supa doctor`                        | preflight: docker, CLI, registry, ports, config                          |
-| `supa prune [flags]`                 | reclaim docker disk (dangling images; `--images`/`--volumes`)            |
+| `supa prune [--images]`              | reclaim docker disk — Supabase images only (others reported)             |
 | `supa config`                        | show `max_active`, `ram_budget` + resolved paths                         |
 | `supa config max-active <n>`         | set how many stacks may run at once (persists)                           |
 | `supa config ram-budget <gb>`        | warn in `stats` when total RAM exceeds this                              |
@@ -235,20 +278,30 @@ bigger RAM win, though, is turning off services you don't use** in `config.toml`
 
 ### Reclaiming disk (`supa prune`)
 
-Supabase images and volumes are large. `supa prune` reclaims Docker disk:
+Supabase images and volumes are large. `supa prune` reclaims Docker disk **within
+supa's [scope](#scope--what-supa-touches-on-your-docker-host)** — Supabase images
+only:
 
 ```sh
-supa prune                 # dangling images only (safe) + report orphan volumes
+supa prune                 # untagged Supabase images + report orphan volumes
 supa prune --dry-run       # show the plan, remove nothing
-supa prune --images        # also remove ALL unused images (re-pulls on next up)
-supa prune --volumes       # also delete orphan volumes — stacks not in the
-                           #   registry (real data → type 'delete' to confirm)
-supa prune --all           # images + volumes
+supa prune --images        # also unused tagged Supabase images (re-pull on next up)
 ```
 
-An **orphan volume** is a `supabase_*` volume whose project isn't in your registry
-and isn't running — a leftover from a removed stack. `supa doctor` / `supa stats`
-help you see what's live before pruning.
+Everything else is reported, never removed:
+
+- **Other projects' images** (your php build layers, base images) are counted so
+  you can see what's there. Reclaiming those is a host-wide decision — run
+  `docker image prune` yourself.
+- **Orphan volumes** — a `com.supabase.cli.project`-labelled volume whose stack is
+  neither registered nor running, i.e. a stack supa doesn't manage. It holds real
+  data, so supa prints the `docker volume rm …` line instead of running it. For a
+  registered stack, `supa destroy <project>` is the supported path.
+- `--volumes` / `--all` are still accepted and now only produce that report.
+
+Removal never uses `--force`: Docker refuses to delete an image any container
+still references (running _or_ stopped), and supa reports that refusal rather
+than overriding it. `supa doctor` / `supa stats` show what's live before pruning.
 
 ### Setting the concurrency limit
 
@@ -422,6 +475,8 @@ doing anything.
   `config.toml`'s ports (it backs up `.bak`, but it's a real edit).
 - `supa env <p> --write [file]` — writes into a project's `.env` file.
 - `supa config max-active <n>` / `ram-budget <gb>` — change limits.
+- `supa prune [--images]` — deletes Supabase images (they re-pull). Never other
+  projects' images, never volumes — `--dry-run` shows exactly what it would do.
 - Respect `max_active`: don't raise it or use `SUPA_MAX_ACTIVE` /
   `SUPA_ALLOW_MULTI` unless the user asked or you've checked the RAM budget
   (`supa stats`).

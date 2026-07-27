@@ -18,11 +18,15 @@ import {
 } from "./util.ts";
 import {
   applyEnvMap,
+  attributeUntagged,
   backupFileName,
   type BackupType,
   ensureSigningKeysPath,
+  imageInUse,
+  isSupabaseRepo,
   latestBackup,
   mergeDotenv,
+  parseImageRows,
   parseMajorVersion,
   releaseAsset,
   resolveBackupDir,
@@ -58,6 +62,7 @@ import {
 import {
   applyLimits,
   dbContainer,
+  foreignSlots,
   guard,
   nameForLabel,
   runCapture,
@@ -411,7 +416,7 @@ export async function cmdAdd(rest: string[]): Promise<void> {
       if (code === 127) die(SUPABASE_MISSING);
       if (code !== 0) die(`'supabase init' failed for '${name}' (exit ${code})`);
     }
-    const chosen = slot ?? nextFreeSlot() ?? "";
+    const chosen = slot ?? nextFreeSlot(new Set((await foreignSlots()).keys())) ?? "";
     const f = cfgFile(name);
     if (/^\d$/.test(chosen) && f && isFile(f)) {
       const changes = rebandConfig(f, chosen);
@@ -427,7 +432,7 @@ export async function cmdAdd(rest: string[]): Promise<void> {
     );
   } else console.error(`  note: no supabase/config.toml found under it yet`);
   if (!init) {
-    const s = nextFreeSlot();
+    const s = nextFreeSlot(new Set((await foreignSlots()).keys()));
     if (s) console.log(`  next free port band: 543${s}X  (apply: supa ports ${name} ${s})`);
   }
 }
@@ -494,7 +499,7 @@ export function cmdUnpark(rest: string[]): void {
 export function cmdNames(): void {
   for (const n of names()) console.log(n);
 }
-export function cmdPorts(rest: string[]): void {
+export async function cmdPorts(rest: string[]): Promise<void> {
   const force = rest.includes("--force") || rest.includes("-f");
   const pos = rest.filter((a) => a !== "--force" && a !== "-f");
   if (pos.length < 1 || pos.length > 2) die("usage: supa ports <name> [slot 0-9] [--force]");
@@ -502,10 +507,11 @@ export function cmdPorts(rest: string[]): void {
   requireProject(name);
   const f = cfgFile(name);
   if (!f || !isFile(f)) die(`no supabase/config.toml for '${name}'`);
+  const foreign = await foreignSlots();
   let slot = pos[1];
   if (slot === undefined) {
-    const s = nextFreeSlot();
-    if (s === null) die("no free port slot (0-9 all taken)");
+    const s = nextFreeSlot(new Set(foreign.keys()));
+    if (s === null) die("no free port slot (0-9 all taken by projects or other containers)");
     slot = s;
   }
   if (!/^\d$/.test(slot)) die("slot must be a single digit 0-9");
@@ -516,6 +522,18 @@ export function cmdPorts(rest: string[]): void {
     die(
       `slot ${slot} (543${slot}X) is already used by ${clash.join(", ")}.\n` +
         `  omit the slot to auto-pick a free one, or pass --force to override anyway.`,
+    );
+  }
+  // Same for a band a container outside supa already publishes on — the stack
+  // simply won't bind while that container holds the port.
+  const held = foreign.get(slot);
+  if (held && !force) {
+    die(
+      `slot ${slot} (543${slot}X) is published by non-Supabase container(s): ${
+        held.join(", ")
+      }.\n` +
+        `  omit the slot to auto-pick a free band, or pass --force to take it anyway\n` +
+        `  (the stack won't start while they hold the port).`,
     );
   }
   const changes = rebandConfig(f, slot);
@@ -582,6 +600,17 @@ export async function cmdDoctor(): Promise<void> {
     }
   }
   console.log(`  ${ok(!collision)} no port collisions`);
+  // 543XX bands held by containers outside supa: supa can't (and won't) move them,
+  // but a stack pointed at one of those bands will fail to bind.
+  const foreign = await foreignSlots();
+  console.log(`  ${ok(foreign.size === 0)} no 543XX ports held by other containers`);
+  for (const [slot, who] of [...foreign].sort()) {
+    const hit = projs.filter((p) => slotOf(p.name) === slot).map((p) => p.name);
+    console.log(
+      `     ! 543${slot}X held by ${who.join(", ")}` +
+        (hit.length ? ` — collides with ${hit.join(", ")} (re-band: supa ports ${hit[0]})` : ""),
+    );
+  }
   const { value, source } = readMaxActive();
   console.log(`  · max_active = ${value === Infinity ? "unlimited" : value} (${source})`);
 }
@@ -1161,16 +1190,79 @@ export async function cmdLimit(rest: string[]): Promise<void> {
   const n = await applyLimits(p);
   console.log(`✓ applied resource limits to ${n} container(s) in ${p}`);
 }
+// Remove named images. `docker image rm` refuses any image a container still
+// references (running or stopped) — that refusal is the last line of defence, so a
+// failure is reported and never forced.
+async function rmImages(refs: string[], what: string): Promise<void> {
+  if (refs.length === 0) return;
+  const r = await runCapture("docker", ["image", "rm", ...refs]);
+  if (r.code === 0) {
+    console.log(`  removed ${refs.length} ${what}`);
+    return;
+  }
+  // Partial failure: docker deletes what it can and errors per refused image, so the
+  // exact count isn't recoverable — report the refusals rather than guess a number.
+  const errs = r.err.split(/\r?\n/).filter((l) => l.trim() !== "");
+  console.log(`  ${what}: docker kept ${errs.length} of ${refs.length}`);
+  for (const l of errs.slice(0, 3)) console.error(`  ! ${l.trim()}`);
+}
+// supa reclaims only what it manages: images from Supabase repositories, and
+// volumes carrying the Supabase project label. Images and volumes belonging to
+// anything else on this docker host are reported and left alone — a host-wide
+// `docker image prune` is the user's call, never supa's.
 export async function cmdPrune(rest: string[]): Promise<void> {
   const flags = new Set(rest.filter((a) => a.startsWith("-")));
   const dry = flags.has("--dry-run");
-  const yes = flags.has("--yes") || flags.has("-y");
   const doAll = flags.has("--all");
   const doImages = flags.has("--images") || doAll;
-  const doVolumes = flags.has("--volumes") || doAll;
+  const volumesAsked = flags.has("--volumes") || doAll;
 
-  // Orphan volumes: supabase volumes whose project label is neither registered nor
-  // running — old stacks left behind. They hold DATA, so removal needs a confirm.
+  const dv = await runCapture("docker", ["version", "--format", "{{.Server.Version}}"]);
+  if (dv.code !== 0 || dv.out.trim() === "") die(withStderr("docker not available", dv.err));
+
+  // Untagged images carry no repository, so each one is attributed by its repo
+  // digests. A locally built layer has none and is therefore never supa's.
+  const dangling = await runCapture("docker", [
+    "image",
+    "ls",
+    "--filter",
+    "dangling=true",
+    "--format",
+    "{{.ID}}",
+  ]);
+  const danglingIds = dangling.out.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+  let untaggedOurs: string[] = [];
+  let untaggedOthers = 0;
+  if (danglingIds.length) {
+    const ins = await runCapture("docker", [
+      "image",
+      "inspect",
+      "--format",
+      "{{.Id}}\t{{json .RepoDigests}}",
+      ...danglingIds,
+    ]);
+    const { ours, others } = attributeUntagged(ins.out);
+    untaggedOurs = ours;
+    untaggedOthers = others.length;
+  }
+
+  // Tagged Supabase images no container references (--images). They re-pull.
+  const rows = parseImageRows(
+    (await runCapture("docker", [
+      "image",
+      "ls",
+      "--format",
+      "{{.ID}}\t{{.Repository}}\t{{.Tag}}\t{{.Size}}",
+    ])).out,
+  );
+  const refs = (await runCapture("docker", ["ps", "-a", "--format", "{{.Image}}"]))
+    .out.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+  const unusedSupa = rows.filter((r) =>
+    isSupabaseRepo(r.repo) && r.tag !== "<none>" && !imageInUse(r, refs)
+  );
+
+  // Orphan volumes: Supabase-labelled volumes whose stack is neither registered nor
+  // running. supa doesn't manage those stacks, so it reports them and stops there.
   const registered = new Set(names().map((n) => labelOf(n)).filter((l): l is string => !!l));
   const running = new Set(await runningLabels());
   const { out: vout } = await runCapture("docker", [
@@ -1186,44 +1278,50 @@ export async function cmdPrune(rest: string[]): Promise<void> {
     if (vname?.trim() && l && !registered.has(l) && !running.has(l)) orphanVols.push(vname.trim());
   }
 
-  console.log("supa prune — plan:");
-  console.log("  • dangling images  → prune (safe)");
+  console.log("supa prune — scope: Supabase images + Supabase-labelled volumes only.");
   console.log(
-    `  • unused images    → ${doImages ? "prune ALL (re-pulls on next up)" : "skip (--images)"}`,
-  );
-  console.log(
-    `  • orphan volumes   → ${
-      orphanVols.length === 0
-        ? "none"
-        : (doVolumes ? "DELETE (data!): " : "keep (--volumes): ") + orphanVols.join(", ")
+    `  • untagged Supabase images  → ${
+      untaggedOurs.length === 0 ? "none" : `remove ${untaggedOurs.length}`
     }`,
   );
+  console.log(
+    `  • unused Supabase images    → ${
+      unusedSupa.length === 0
+        ? "none"
+        : doImages
+        ? `remove ${unusedSupa.length} (re-pulled on next up)`
+        : `skip ${unusedSupa.length} (--images)`
+    }`,
+  );
+  // prune removes without a prompt, so it names its targets first.
+  for (const r of doImages ? unusedSupa : []) console.log(`      ${r.repo}:${r.tag}  ${r.size}`);
+  if (untaggedOthers) {
+    console.log(
+      `  • ${untaggedOthers} untagged image(s) from other projects → left alone ` +
+        `(not supa's — 'docker image prune' is yours to run)`,
+    );
+  }
+  console.log(
+    `  • orphan Supabase volumes   → ${
+      orphanVols.length === 0 ? "none" : `report only (${orphanVols.length})`
+    }`,
+  );
+  if (orphanVols.length) {
+    console.log("      not in your registry, so supa won't delete their data — you can:");
+    console.log(`        docker volume rm ${orphanVols.join(" ")}`);
+    console.log("      (a registered stack's data: supa destroy <project>)");
+  }
+  if (volumesAsked) {
+    console.log("  note: --volumes/--all no longer delete volumes (out of supa's scope).");
+  }
   if (dry) {
     console.log("(dry run — nothing removed)");
     return;
   }
 
-  const reclaimed = (out: string) =>
-    out.split(/\r?\n/).find((l) => /Total reclaimed/.test(l))?.trim();
-  const d = await runCapture("docker", ["image", "prune", "-f"]);
-  console.log(`  ${reclaimed(d.out) ?? "pruned dangling images"}`);
+  await rmImages(untaggedOurs, "untagged Supabase image(s)");
   if (doImages) {
-    const a = await runCapture("docker", ["image", "prune", "-af"]);
-    console.log(`  ${reclaimed(a.out) ?? "pruned unused images"}`);
-  }
-  if (doVolumes && orphanVols.length) {
-    if (!yes) {
-      console.error(`⚠ about to DELETE ${orphanVols.length} volume(s) holding real data:`);
-      for (const v of orphanVols) console.error(`    ${v}`);
-      const ans = await readLine(`  type 'delete' to confirm: `);
-      if (ans !== "delete") die("aborted (confirmation did not match)");
-    }
-    const r = await runCapture("docker", ["volume", "rm", ...orphanVols]);
-    console.log(
-      r.code === 0
-        ? `  removed ${orphanVols.length} orphan volume(s)`
-        : `  ! volume rm failed (exit ${r.code})`,
-    );
+    await rmImages(unusedSupa.map((r) => `${r.repo}:${r.tag}`), "unused Supabase image(s)");
   }
   console.log("✓ prune done");
 }
@@ -1343,9 +1441,13 @@ service, lists the stack's services.`,
   limit: `supa limit <project>
 Apply the project's supa.limits (memory/cpus caps per container) to the
 running stack now. Happens automatically on 'supa up'.`,
-  prune: `supa prune [--images] [--volumes] [--all] [--dry-run] [--yes]
-Reclaim docker disk. Default: dangling images only (safe). --images: all
-unused images. --volumes: orphan stacks' volumes (real data, typed confirm).`,
+  prune: `supa prune [--images] [--dry-run]
+Reclaim docker disk WITHIN supa's scope — Supabase images only. Other
+projects' images (a php service, your own builds) are reported, never
+touched: a host-wide 'docker image prune' is yours to run.
+Default: untagged Supabase images. --images: also unused tagged ones
+(re-pulled on next up). Volumes are reported only — delete a registered
+stack's data with 'supa destroy', an unmanaged stack's with 'docker volume rm'.`,
   config: `supa config [--json]
 Show resolved paths + settings. Set with:
   supa config max-active <n>     stacks allowed at once (default 1)
@@ -1396,7 +1498,7 @@ export function cmdHelp(rest: string[] = []): void {
   supa park [<dir>] · unpark <dir>   auto-discover supabase projects in a dir (opt-in)
   supa ports <name> [slot] [--force]   re-band 543XX ports (auto-picks a free slot)
   supa doctor                   preflight: docker, CLI, registry, ports, config
-  supa prune [--images|--volumes|--all] [--dry-run]  reclaim docker disk (safe by default)
+  supa prune [--images] [--dry-run]   reclaim docker disk (Supabase images only)
   supa config [--json] [max-active <n> | ram-budget <gb> | backup-dir <path>]   show/set
   supa completion bash|zsh|pwsh    print a tab-completion script
   supa version                  print the supa version

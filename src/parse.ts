@@ -332,6 +332,107 @@ export function parseLimits(text: string): Limits {
   return out;
 }
 
+// ---------- docker scope attribution (pure) -----------------------------------
+// supa manages Supabase stacks only. Everything below decides what on a shared
+// docker host is supa's — the rest is another service's and is never touched.
+
+// Every image the Supabase CLI pulls sits under a `supabase` namespace
+// (supabase/postgres, public.ecr.aws/supabase/kong, ghcr.io/supabase/…). Any other
+// repository belongs to something supa does not manage.
+export function isSupabaseRepo(repo: string): boolean {
+  const r = repo.trim();
+  if (r === "" || r === "<none>") return false;
+  const segs = r.split("/");
+  return segs.length > 1 && segs.slice(0, -1).includes("supabase");
+}
+
+export interface ImageRow {
+  id: string;
+  repo: string;
+  tag: string;
+  size: string;
+}
+// Parse `docker image ls --format '{{.ID}}\t{{.Repository}}\t{{.Tag}}\t{{.Size}}'`.
+export function parseImageRows(text: string): ImageRow[] {
+  const out: ImageRow[] = [];
+  for (const line of text.split(/\r?\n/)) {
+    if (line.trim() === "") continue;
+    const [id, repo, tag, size] = line.split("\t");
+    if (!id?.trim() || !repo?.trim()) continue;
+    out.push({
+      id: id.trim(),
+      repo: repo.trim(),
+      tag: (tag ?? "").trim(),
+      size: (size ?? "").trim(),
+    });
+  }
+  return out;
+}
+
+// Split untagged ("dangling") images into supa's and everyone else's. A pulled
+// image keeps its RepoDigests after losing its tag — the only ownership evidence
+// left. A locally built layer has none, so it is NEVER attributed to Supabase.
+// Input: `docker image inspect --format '{{.Id}}\t{{json .RepoDigests}}'`.
+export function attributeUntagged(text: string): { ours: string[]; others: string[] } {
+  const ours: string[] = [];
+  const others: string[] = [];
+  for (const line of text.split(/\r?\n/)) {
+    if (line.trim() === "") continue;
+    const [id, digestJson] = line.split("\t");
+    const key = (id ?? "").trim();
+    if (key === "") continue;
+    let digests: string[] = [];
+    try {
+      const parsed = JSON.parse((digestJson ?? "").trim() || "null");
+      if (Array.isArray(parsed)) digests = parsed.filter((d) => typeof d === "string");
+    } catch { /* unparseable -> unattributable -> not ours */ }
+    (digests.some((d) => isSupabaseRepo(d.split("@")[0])) ? ours : others).push(key);
+  }
+  return { ours, others };
+}
+
+// Does a container's image reference name this image? Refs are repo:tag or a bare
+// (sometimes sha256-prefixed) id, so both forms have to be compared.
+export function imageInUse(row: ImageRow, refs: Iterable<string>): boolean {
+  const tagged = `${row.repo}:${row.tag}`;
+  for (const raw of refs) {
+    const ref = raw.trim();
+    if (ref === "") continue;
+    if (ref === tagged || ref === row.repo) return true;
+    if (ref.replace(/^sha256:/, "").startsWith(row.id)) return true;
+  }
+  return false;
+}
+
+// 543xX bands published by containers carrying no Supabase project label, keyed by
+// slot digit → container names. supa hands out bands, so it must not pick one
+// another service already holds. Input:
+// `docker ps --format '{{.Names}}\t{{.Ports}}\t{{.Label "com.supabase.cli.project"}}'`.
+export function foreignSlotHolders(text: string): Map<string, string[]> {
+  const out = new Map<string, string[]>();
+  for (const line of text.split(/\r?\n/)) {
+    if (line.trim() === "") continue;
+    const [name, ports, label] = line.split("\t");
+    if ((label ?? "").trim() !== "") continue; // a Supabase stack — not foreign
+    const who = (name ?? "").trim();
+    if (who === "") continue;
+    // A published range ("0.0.0.0:54330-54339->80-89/tcp") can cover several bands.
+    for (const m of (ports ?? "").matchAll(/:(\d+)(?:-(\d+))?->/g)) {
+      const lo = Number(m[1]);
+      const hi = m[2] ? Number(m[2]) : lo;
+      for (let d = 0; d <= 9; d++) {
+        const base = 54300 + d * 10; // slot d owns 543d0–543d9
+        if (lo > base + 9 || hi < base) continue;
+        const slot = String(d);
+        const list = out.get(slot) ?? [];
+        if (!list.includes(who)) list.push(who);
+        out.set(slot, list);
+      }
+    }
+  }
+  return out;
+}
+
 // Ensure config.toml has an active signing_keys_path; return updated text + path.
 export function ensureSigningKeysPath(text: string): { text: string; relPath: string } {
   const active = text.match(/^\s*signing_keys_path\s*=\s*"([^"]+)"/m);
