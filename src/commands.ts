@@ -478,7 +478,9 @@ export function cmdPark(rest: string[]): void {
   console.log(`supa: parked ${abs}`);
   const found: string[] = [];
   for (const s of Deno.readDirSync(abs)) {
-    if (s.isDirectory && isFile(join(abs, s.name, "supabase", "config.toml"))) found.push(s.name);
+    // Same filter as discovery in readRegistry — never announce a name it won't register.
+    if (!s.isDirectory || !SAFE_NAME.test(s.name)) continue;
+    if (isFile(join(abs, s.name, "supabase", "config.toml"))) found.push(s.name);
   }
   console.log(
     found.length
