@@ -7,8 +7,14 @@ export interface Project {
   root: string;
 }
 
-// Parse registry text into projects (skips comments/blank/malformed lines,
-// expands a leading ~).
+// The one legal project-name charset — enforced on `add`, park discovery, AND
+// hand-edited registry lines. Names reach shell completion (`compgen -W` expands
+// its wordlist, command substitution included), so this allowlist is a security
+// boundary, not a style rule.
+export const SAFE_NAME = /^[A-Za-z0-9._-]+$/;
+
+// Parse registry text into projects (skips comments/blank/malformed lines and
+// names outside SAFE_NAME, expands a leading ~). `*` names parked dirs.
 export function parseRegistry(text: string): Project[] {
   const out: Project[] = [];
   for (const raw of text.split(/\r?\n/)) {
@@ -17,7 +23,7 @@ export function parseRegistry(text: string): Project[] {
     const i = line.indexOf("|");
     if (i < 1) continue; // no pipe, or empty name -> malformed, skip
     const name = line.slice(0, i).trim();
-    if (name === "") continue;
+    if (name !== "*" && !SAFE_NAME.test(name)) continue;
     out.push({ name, root: expandTilde(line.slice(i + 1).trim()) });
   }
   return out;
@@ -199,6 +205,12 @@ export function semverNewer(latest: string, current: string): boolean {
     if ((a[i] ?? 0) < (b[i] ?? 0)) return false;
   }
   return false;
+}
+
+// A release tag exactly as supa publishes them. The GitHub API response feeds
+// URL building in self-update — anything looser admits path segments.
+export function isReleaseTag(tag: string): boolean {
+  return /^v?\d+\.\d+\.\d+$/.test(tag);
 }
 
 // Release asset name for a platform — must match build.ts TARGETS naming.

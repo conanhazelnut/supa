@@ -19,6 +19,7 @@ import {
   ensureSigningKeysPath,
   foreignSlotHolders,
   imageInUse,
+  isReleaseTag,
   isSupabaseRepo,
   latestBackup,
   mergeDotenv,
@@ -115,6 +116,15 @@ Deno.test("parseRegistry passes parked (*|dir) lines through", () => {
   const reg = parseRegistry("web|/code/web\n*|/code\n");
   eq(reg, [{ name: "web", root: "/code/web" }, { name: "*", root: "/code" }]);
 });
+// TEETH: names reach bash completion via `compgen -W "$(supa __names)"`, which
+// expands command substitutions in its wordlist. Accepting a name outside
+// SAFE_NAME turns Tab into code execution — REVERT the filter → RED.
+Deno.test("parseRegistry drops names outside the safe charset", () => {
+  const reg = parseRegistry(
+    "ok-name|/a\nbad name|/b\nx$(whoami)|/c\n`ls`|/d\nsemi;rm|/e\n中文|/f\nok.two|/g\n",
+  );
+  eq(reg.map((p) => p.name), ["ok-name", "ok.two"]);
+});
 
 // ---------- self-update helpers -----------------------------------------------
 Deno.test("semverNewer compares vX.Y.Z tags numerically", () => {
@@ -123,6 +133,16 @@ Deno.test("semverNewer compares vX.Y.Z tags numerically", () => {
   ok(semverNewer("1.0.0", "0.9.9"), "major bump");
   ok(!semverNewer("v0.1.0", "0.1.0"), "equal is not newer");
   ok(!semverNewer("v0.1.0", "0.2.0"), "older is not newer");
+});
+// TEETH: the latest-release tag feeds self-update URL building; anything beyond
+// vX.Y.Z admits path segments into the download URL — REVERT the gate → RED.
+Deno.test("isReleaseTag accepts only vX.Y.Z", () => {
+  ok(isReleaseTag("v0.1.1"), "v-prefixed");
+  ok(isReleaseTag("1.2.3"), "bare");
+  eq(isReleaseTag("v1.2.3-rc.1"), false); // supa never publishes pre-releases
+  eq(isReleaseTag("9x/../../evil"), false);
+  eq(isReleaseTag("v1.2"), false);
+  eq(isReleaseTag(""), false);
 });
 Deno.test("releaseAsset matches build.ts target naming", () => {
   eq(releaseAsset("windows", "x86_64"), "supa-x86_64-pc-windows-msvc.exe");

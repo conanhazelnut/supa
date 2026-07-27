@@ -24,6 +24,7 @@ import {
   parseRegistry,
   type Project,
   rebandText,
+  SAFE_NAME,
 } from "./parse.ts";
 
 export type { Hooks, Limits, Project };
@@ -74,7 +75,7 @@ export function readRegistry(): Project[] {
     }
     subs.sort((a, b) => (a.name < b.name ? -1 : 1));
     for (const s of subs) {
-      if (!s.isDirectory || seen.has(s.name) || !/^[A-Za-z0-9._-]+$/.test(s.name)) continue;
+      if (!s.isDirectory || seen.has(s.name) || !SAFE_NAME.test(s.name)) continue;
       const root = join(e.root, s.name);
       if (!isFile(join(root, "supabase", "config.toml"))) continue;
       seen.add(s.name);

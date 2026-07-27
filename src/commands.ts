@@ -23,6 +23,7 @@ import {
   type BackupType,
   ensureSigningKeysPath,
   imageInUse,
+  isReleaseTag,
   isSupabaseRepo,
   latestBackup,
   mergeDotenv,
@@ -30,6 +31,7 @@ import {
   parseMajorVersion,
   releaseAsset,
   resolveBackupDir,
+  SAFE_NAME,
   semverNewer,
   setMajorVersion,
   shaFor,
@@ -175,7 +177,8 @@ export async function cmdEnv(rest: string[]): Promise<void> {
   }
   const existing = isFile(target) ? readTextFile(target) : "";
   const { text, keys, map } = mergeDotenv(existing, incoming);
-  Deno.writeTextFileSync(target, text);
+  // Holds service keys — owner-only, tightening an existing file's perms too.
+  Deno.writeTextFileSync(target, text, { mode: 0o600 });
   console.log(`supa: wrote ${keys.length} keys to ${target}`);
   for (const k of keys) console.log(`  ${k}=${maskSecret(k, map[k])}`);
   console.log(
@@ -397,7 +400,7 @@ export async function cmdAdd(rest: string[]): Promise<void> {
   if (pos.length !== 2) die("usage: supa add <name> <path> [--init] [--slot 0-9]");
   if (slot !== undefined && !/^\d$/.test(slot)) die("--slot must be a single digit 0-9");
   const [name, path] = pos;
-  if (!/^[A-Za-z0-9._-]+$/.test(name)) die(`invalid name '${name}' (use letters/digits/._-)`);
+  if (!SAFE_NAME.test(name)) die(`invalid name '${name}' (use letters/digits/._-)`);
   if (names().includes(name)) die(`'${name}' is already registered`);
   const abs = expandTilde(path);
   if (!isDir(abs)) console.error(`  warning: '${abs}' is not a directory (registering anyway)`);
@@ -715,7 +718,9 @@ export async function cmdRotate(rest: string[]): Promise<void> {
   } catch (e) {
     die(`bad signing key from the Supabase CLI: ${e instanceof Error ? e.message : e}`);
   }
-  Deno.writeTextFileSync(keyFile, keyArrayText);
+  // Private key material: owner-only. Deno applies mode on rewrite too, so a
+  // world-readable file from an older supa is tightened here. No-op on Windows.
+  Deno.writeTextFileSync(keyFile, keyArrayText, { mode: 0o600 });
   console.log(`  wrote new signing key -> ${keyFile}`);
   if (newCfg !== cfgText) {
     Deno.writeTextFileSync(`${f}.bak`, cfgText);
@@ -774,7 +779,8 @@ async function performBackup(
       const body = Deno.readTextFileSync(tmp);
       chunks.push(parts.length > 1 ? `-- >>> supa backup: ${part.label} <<<\n${body}` : body);
     }
-    Deno.writeTextFileSync(partial, chunks.join("\n"));
+    // Dumps hold real data — owner-only; rename carries the mode to finalPath.
+    Deno.writeTextFileSync(partial, chunks.join("\n"), { mode: 0o600 });
     Deno.renameSync(partial, finalPath);
   } catch (e) {
     try {
@@ -1121,6 +1127,8 @@ export async function cmdSelfUpdate(rest: string[]): Promise<void> {
     if (r.ok) tag = (await r.json())?.tag_name ?? null;
   } catch { /* reported below */ }
   if (!tag) die(`could not reach GitHub to check releases (offline?) — ${releases}`);
+  // The tag feeds URL building below — accept only supa's own vX.Y.Z shape.
+  if (!isReleaseTag(tag)) die(`unexpected release tag '${tag}' from GitHub — aborting`);
   const newer = semverNewer(tag, VERSION);
   console.log(`supa: current v${VERSION} — latest ${tag}${newer ? "" : "  (up to date)"}`);
   if (check || !newer) {

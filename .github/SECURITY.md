@@ -21,10 +21,18 @@ between minor versions.
   own hooks (`supa.hooks`): those commands **are** run with the system shell
   (`sh -c` / `cmd /c`) in the project directory, by design — see
   [Trust boundaries](#trust-boundaries).
-- **Scoped permissions, no network.** The compiled binary requests
-  `--allow-read --allow-write --allow-env --allow-run` and **not** `--allow-net`
-  — it reads/writes your configs and runs `docker` / `supabase`, and makes no
-  network calls of its own.
+- **Scoped permissions, no phoning home.** The compiled binary requests
+  `--allow-read --allow-write --allow-env --allow-run`, plus `--allow-net`
+  pinned to four GitHub hosts (`api.github.com`, `github.com`,
+  `objects.githubusercontent.com`, `release-assets.githubusercontent.com`) used
+  by exactly one command — `supa upgrade`, the checksum-verified self-update —
+  and only when you run it. No other command touches the network; there is no
+  telemetry.
+- **Scoped Docker operations.** Every container / volume / image operation is
+  filtered by the Supabase CLI's project label or a Supabase image repository —
+  other workloads sharing the Docker daemon are never stopped, capped, or
+  pruned. See
+  [SUPA.md — Scope](../docs/SUPA.md#scope--what-supa-touches-on-your-docker-host).
 - **Secrets stay local.** `supa env --write` writes into your project's dotenv
   and masks secrets in its console output; `supa rotate` reminds you to gitignore
   the private `signing_keys.json`. supa never transmits any of this anywhere.
@@ -38,12 +46,15 @@ between minor versions.
 ## Trust boundaries
 
 supa operates entirely on your machine against your own registry, project
-configs, and local Docker. It has no network calls of its own beyond the install
-script fetching a release binary over HTTPS.
+configs, and local Docker. Its only network calls are the install scripts and
+`supa upgrade`, both fetching releases from GitHub over HTTPS.
 
-**Registering a project means trusting its repo.** A project's `supa.hooks`
-(`restore.pre` / `restore.post`) are shell commands that `supa restore` and
-`supa upgrade` execute in that project's directory — the same trust you extend
-to a repo's Makefile or npm scripts. Don't register a repo you wouldn't run
-scripts from, and read its `supa.hooks` before the first restore of a freshly
-cloned project.
+**Registering a project means trusting its repo.** A project's `supa.hooks` are
+shell commands supa executes in that project's directory: `up.pre` / `up.post`
+and `down.pre` / `down.post` run on every `supa up` / `supa down` (also via
+`restart`, `switch`, `rotate`, `pg-upgrade`), and `restore.pre` /
+`restore.post` run on `supa restore` and `supa pg-upgrade`. That is the same
+trust you extend to a repo's Makefile or npm scripts — don't register or park a
+repo you wouldn't run scripts from, and read its `supa.hooks` **before the
+first `supa up`** of a freshly cloned project. supa prints each hook command
+before running it.

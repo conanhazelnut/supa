@@ -4,6 +4,25 @@ All notable changes to supa are documented here. This project adheres to
 [Semantic Versioning](https://semver.org/) and
 [Keep a Changelog](https://keepachangelog.com/).
 
+## [Unreleased]
+
+### Security
+
+- Secret-bearing files are now written owner-only (0600 on POSIX; Windows
+  unaffected), tightening pre-existing files too: `supa rotate`'s private
+  `signing_keys.json`, `supa env --write`'s dotenv, and `supa backup` /
+  `pg-upgrade` DB dumps.
+- Hand-edited registry names are validated against the same charset `supa add`
+  and park discovery already enforce (`[A-Za-z0-9._-]`). Names outside it are
+  skipped — they could smuggle shell expansions into bash tab-completion
+  (`compgen -W` expands its wordlist).
+- `supa upgrade` validates the release tag from the GitHub API (`vX.Y.Z` only)
+  before building download URLs.
+- `SECURITY.md` corrected: the binary does hold `--allow-net` pinned to four
+  GitHub hosts (used only by `supa upgrade`); lifecycle hooks (`up.pre` etc.)
+  run on every `supa up`, not just on restore — read a repo's `supa.hooks`
+  before its first `supa up`.
+
 ## [0.1.1] — 2026-07-27
 
 `supa prune` now stays inside supa's own lane: Supabase images only, and it never
