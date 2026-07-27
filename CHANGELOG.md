@@ -4,6 +4,43 @@ All notable changes to supa are documented here. This project adheres to
 [Semantic Versioning](https://semver.org/) and
 [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.1.1] — 2026-07-27
+
+`supa prune` now stays inside supa's own lane: Supabase images only, and it never
+deletes volumes. Before this release it could remove images belonging to anything
+else sharing your Docker daemon.
+
+**Behaviour change despite the patch number:** if you script
+`supa prune --volumes` / `--all` expecting volumes to be deleted, they no longer
+are — the volumes are reported with the `docker volume rm` command instead.
+
+### Changed
+
+- **`supa prune` is now scoped to Supabase images.** It no longer runs a host-wide
+  `docker image prune`, which could remove images belonging to anything else on
+  the Docker daemon (another project's service, your own local builds). Untagged
+  images are attributed by repo digest — a locally built layer has none and is
+  never claimed. Other projects' images are counted in the report and left alone.
+- **`supa prune` no longer deletes volumes.** Orphan Supabase volumes belong to
+  stacks supa doesn't manage, so it reports them plus the `docker volume rm`
+  command instead of deleting on a confirmation. `--volumes` / `--all` still
+  parse and now produce that report only; `supa destroy` remains the supported
+  way to delete a registered stack's data.
+- Image removal never passes `--force`: Docker's own refusal to delete an
+  in-use image (running or stopped container) is reported, not overridden.
+
+### Added
+
+- `supa ports` / `supa add --init` skip a `543xX` band that a non-Supabase
+  container already publishes on, and `supa doctor` reports any overlap.
+- `docs/SUPA.md` documents the Docker-host scope boundary per command.
+
+### Fixed
+
+- Windows installer: checksum verification under PowerShell 5.1.
+- `runningLabels()` now filters on `label=com.supabase.cli.project` instead of
+  listing every container on the host.
+
 ## [0.1.0] — 2026-07-24
 
 Initial public release — a thin, cross-platform CLI for running multiple local
@@ -36,4 +73,5 @@ Supabase stacks (one per project) on top of the official Supabase CLI.
   with checksum verification and a signed build-provenance attestation. Unit +
   CLI integration tests; CI runs fmt / lint / check / test on Linux and Windows.
 
+[0.1.1]: https://github.com/conanhazelnut/supa/releases/tag/v0.1.1
 [0.1.0]: https://github.com/conanhazelnut/supa/releases/tag/v0.1.0
