@@ -35,7 +35,9 @@ between minor versions.
   [SUPA.md — Scope](../docs/SUPA.md#scope--what-supa-touches-on-your-docker-host).
 - **Secrets stay local.** `supa env --write` writes into your project's dotenv
   and masks secrets in its console output; `supa rotate` reminds you to gitignore
-  the private `signing_keys.json`. supa never transmits any of this anywhere.
+  the private `signing_keys.json`. Secret-bearing files (signing key, dotenv,
+  DB dumps) are written owner-only (0600) on POSIX. supa never transmits any of
+  this anywhere.
 - **Release integrity.** Every release ships `SHA256SUMS.txt`, and both install
   scripts (`install.sh`, `install.ps1`) verify the downloaded binary against it
   before installing. Release binaries also carry a signed build-provenance
