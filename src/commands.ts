@@ -21,6 +21,7 @@ import {
   attributeUntagged,
   backupFileName,
   type BackupType,
+  droppedRegistryNames,
   ensureSigningKeysPath,
   imageInUse,
   isReleaseTag,
@@ -582,6 +583,16 @@ export async function cmdDoctor(): Promise<void> {
   if (!isFile(reg)) return;
   const projs = readRegistry();
   console.log(`  ${ok(projs.length > 0)} projects registered  ${projs.length}`);
+  // JSON.stringify neutralizes control chars — these names failed the charset
+  // rule, so they may contain anything, including terminal escapes.
+  const dropped = droppedRegistryNames(readTextFile(reg));
+  console.log(
+    `  ${ok(dropped.length === 0)} registry names valid` +
+      (dropped.length ? `  (${dropped.length} line(s) ignored)` : ""),
+  );
+  for (const n of dropped) {
+    console.log(`     ✗ ignored (name must match [A-Za-z0-9._-]): ${JSON.stringify(n)}`);
+  }
   let allCfg = true;
   for (const p of projs) {
     if (!cfgDir(p.name)) {

@@ -342,7 +342,9 @@ admin|~/code/admin
 *|~/code            # parked dir (written by `supa park ~/code`)
 ```
 
-- **name** — what you type (`supa up <name>`).
+- **name** — what you type (`supa up <name>`). Letters/digits/`._-` only —
+  names reach shell tab-completion, so the charset is enforced even on
+  hand-edited lines; anything else is ignored and `supa doctor` lists it.
 - **path** — the repo root. A leading `~` expands to home on every OS. Use
   forward slashes even on Windows; absolute paths work too.
 - **`*|dir` (parked)** — opt-in auto-discovery: every immediate subdir of `dir`

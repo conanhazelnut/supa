@@ -3,6 +3,7 @@
 #
 # Format (one per line):  name|path
 #   name — the alias you type:  supa up <name>
+#          letters/digits/._- only; other names are ignored (`supa doctor` lists them)
 #   path — the repo root. supa finds supabase/config.toml under it (root,
 #          apps/<x>/, or examples/<x>/) and reads its label + ports live.
 #

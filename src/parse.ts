@@ -29,6 +29,21 @@ export function parseRegistry(text: string): Project[] {
   return out;
 }
 
+// Names on well-formed registry lines that parseRegistry drops for the charset
+// rule — doctor surfaces these so a hand-edited project never vanishes silently.
+export function droppedRegistryNames(text: string): string[] {
+  const out: string[] = [];
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (line === "" || line.startsWith("#")) continue;
+    const i = line.indexOf("|");
+    if (i < 1) continue;
+    const name = line.slice(0, i).trim();
+    if (name !== "*" && !SAFE_NAME.test(name)) out.push(name);
+  }
+  return out;
+}
+
 // Read project_id (the docker label) from config.toml text.
 export function parseLabel(text: string): string | null {
   for (const line of text.split(/\r?\n/)) {

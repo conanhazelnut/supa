@@ -16,6 +16,7 @@ import {
   applyEnvMap,
   attributeUntagged,
   backupFileName,
+  droppedRegistryNames,
   ensureSigningKeysPath,
   foreignSlotHolders,
   imageInUse,
@@ -124,6 +125,17 @@ Deno.test("parseRegistry drops names outside the safe charset", () => {
     "ok-name|/a\nbad name|/b\nx$(whoami)|/c\n`ls`|/d\nsemi;rm|/e\n中文|/f\nok.two|/g\n",
   );
   eq(reg.map((p) => p.name), ["ok-name", "ok.two"]);
+});
+// TEETH: doctor is the only place a charset-dropped line is surfaced — if this
+// list and parseRegistry ever disagree on the accept set, a hand-edited project
+// vanishes with no explanation. REVERT either side → RED.
+Deno.test("droppedRegistryNames mirrors parseRegistry's accept set", () => {
+  const text = "ok|/a\nbad name|/b\n*|/c\nx$(y)|/d\n# comment\nnopipe\n|/empty\n";
+  const dropped = droppedRegistryNames(text);
+  eq(dropped, ["bad name", "x$(y)"]); // charset drops only — not malformed lines
+  const accepted = parseRegistry(text).map((p) => p.name);
+  eq(accepted, ["ok", "*"]);
+  eq(dropped.filter((d) => accepted.includes(d)), [], "disjoint from accepted");
 });
 
 // ---------- self-update helpers -----------------------------------------------

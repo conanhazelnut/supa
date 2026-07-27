@@ -6,6 +6,11 @@ All notable changes to supa are documented here. This project adheres to
 
 ## [Unreleased]
 
+### Added
+
+- `supa doctor` lists registry lines ignored by the name-charset rule, so a
+  hand-edited project can't vanish silently.
+
 ### Security
 
 - Secret-bearing files are now written owner-only (0600 on POSIX; Windows
