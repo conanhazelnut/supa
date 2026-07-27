@@ -73,5 +73,5 @@ Supabase stacks (one per project) on top of the official Supabase CLI.
   with checksum verification and a signed build-provenance attestation. Unit +
   CLI integration tests; CI runs fmt / lint / check / test on Linux and Windows.
 
-[0.1.1]: https://github.com/conanhazelnut/supa/compare/v0.1.0...main
+[0.1.1]: https://github.com/conanhazelnut/supa/releases/tag/v0.1.1
 [0.1.0]: https://github.com/conanhazelnut/supa/releases/tag/v0.1.0
