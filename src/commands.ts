@@ -168,14 +168,29 @@ export async function cmdUp(rest: string[]): Promise<void> {
 }
 export async function cmdDown(rest: string[]): Promise<void> {
   if (rest.length < 1) die("usage: supa down <project...> | supa down --all");
-  const list = rest[0] === "--all" ? names() : rest;
-  // Same preflight as up: refuse the whole list if any name is unknown or has
-  // no config.toml, so we never stop A then die on B mid-list.
-  for (const p of list) {
-    if (rest[0] !== "--all") requireProject(p);
+  // --all: stop every *stoppable* registered stack. A broken registry row
+  // (no config.toml) is warned + skipped so one bad entry cannot block an
+  // emergency "stop everything". Named lists stay strict (refuse the whole
+  // batch) so `down a b` never stops A then dies on B.
+  if (rest[0] === "--all") {
+    const list: string[] = [];
+    for (const p of names()) {
+      if (!cfgDir(p)) {
+        console.error(
+          `  warning: skipping '${p}' — no supabase/config.toml under '${rootOf(p)}'`,
+        );
+        continue;
+      }
+      list.push(p);
+    }
+    for (const p of list) await stopStack(p);
+    return;
+  }
+  for (const p of rest) {
+    requireProject(p);
     requireCfg(p);
   }
-  for (const p of list) await stopStack(p);
+  for (const p of rest) await stopStack(p);
 }
 export async function cmdSwitch(rest: string[]): Promise<void> {
   if (rest.length !== 1) die("usage: supa switch <project>");
@@ -541,8 +556,14 @@ export async function cmdAdd(rest: string[]): Promise<void> {
     } else {
       console.log(`>> supabase init (${abs})`);
       const code = await runInherit(supabaseCmd(), ["--workdir", abs, "init"]);
-      if (code === 127) die(SUPABASE_MISSING);
-      if (code !== 0) die(`'supabase init' failed for '${name}' (exit ${code})`);
+      if (code === 127 || code !== 0) {
+        // Roll back the line we just wrote — leave no half-applied entry.
+        try {
+          Deno.writeTextFileSync(reg, prev);
+        } catch { /* best-effort */ }
+        if (code === 127) die(SUPABASE_MISSING);
+        die(`'supabase init' failed for '${name}' (exit ${code})`);
+      }
     }
     const f = cfgFile(name);
     if (chosen && f && isFile(f)) {
@@ -1648,7 +1669,9 @@ limit (default 1) — raise it: supa config max-active <n>. Runs the project's
 up.pre / up.post hooks (supa.hooks) and applies supa.limits caps if present.`,
   down: `supa down <project...> | supa down --all   (alias: stop)
 Stop stack(s) via 'supabase stop' (data stays in the docker volume).
-Runs down.pre / down.post hooks if present.`,
+Named lists refuse the whole batch if any name is unknown / has no
+config.toml. --all skips broken registry rows (warns) so one bad entry
+cannot block stopping the rest. Runs down.pre / down.post hooks if present.`,
   switch: `supa switch <project>   (alias: only)
 Stop every other registered running stack, then start only <project>.
 Running stacks that aren't in the registry are left alone.`,

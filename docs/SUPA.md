@@ -99,6 +99,11 @@ config dir resolved in this order:
 3. Windows: `%APPDATA%\supa`.
 4. else `~/.config/supa`.
 
+Env overrides (`SUPA_HOME`, `SUPA_REGISTRY`, `SUPA_CONFIG`, and
+`XDG_CONFIG_HOME`) are absolutized — `~` expands and a relative path is resolved
+against the current working directory — so they survive a later `supa` run from
+another cwd.
+
 Point `SUPA_HOME` at a repo to keep the registry version-controlled (e.g.
 `export SUPA_HOME="$HOME/code/supa"`), or use a `supa`-dir symlink. Fine-grained
 overrides: `SUPA_REGISTRY` (registry file path), `SUPA_CONFIG` (config file
@@ -475,7 +480,9 @@ doing anything.
 ### Tier 2 — state-changing (state what you'll do, then act)
 
 - `supa up / down / restart / switch` — start/stop real containers. `switch` and
-  `down --all` stop **other** stacks — name which ones first.
+  `down --all` stop **other** stacks — name which ones first. (`down --all`
+  skips registry rows that have no `config.toml`; a named `down a b` still
+  refuses the whole list if any name is broken.)
 - `supa add / rm` — edit the registry. `supa ports <name>` — rewrites a
   `config.toml`'s ports (it backs up `.bak`, but it's a real edit).
 - `supa env <p> --write [file]` — writes into a project's `.env` file.

@@ -8,6 +8,13 @@ All notable changes to supa are documented here. This project adheres to
 
 ### Fixed
 
+- `SUPA_HOME` / `SUPA_REGISTRY` / `SUPA_CONFIG` (and `XDG_CONFIG_HOME`) expand `~`
+  and resolve relative paths against cwd — same rule as registry roots and
+  `backup-dir`, so a quoted `SUPA_HOME='~/…'` no longer points at a literal `~`.
+- `supa add --init` rolls back the registry line when `supabase init` fails, so
+  a failed init leaves no half-applied entry.
+- `supa down --all` warns and skips registered projects that have no
+  `config.toml`, instead of refusing to stop anything.
 - `supa restart` preflights the whole name list against max-active (like `up`),
   so a batch of stopped stacks cannot start the first and refuse the rest.
 - `supa add` / `supa park` store absolute paths in the registry, so a relative
@@ -34,9 +41,10 @@ All notable changes to supa are documented here. This project adheres to
   counts as one start under max-active (not a false refusal).
 - `supa help restore` documents `--latest`'s prefer-full / typed-fallback
   behavior (aligned with `docs/SUPA.md`).
-- `supa up` / `restart` / `down` preflight `config.toml` for every name before
-  mutating any stack (same as `switch`), so a registered-but-uninit project
-  cannot leave earlier stacks half-applied.
+- `supa up` / `restart` / named `down` preflight `config.toml` for every name
+  before mutating any stack (same as `switch`), so a registered-but-uninit
+  project cannot leave earlier stacks half-applied. (`down --all` skips broken
+  rows instead — see above.)
 - `supa pg-upgrade` step 5 (start after volume drop) prints snapshot +
   `config.toml.bak` recovery hints on failure.
 - `supa rm` refuses park-discovered names (use `unpark`); removing an explicit

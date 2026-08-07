@@ -14,13 +14,15 @@ function ok(cond: boolean, msg = "expected true"): void {
 async function runSupa(
   args: string[],
   home: string,
-  opts: { cwd?: string } = {},
+  opts: { cwd?: string; pathPrefix?: string } = {},
 ): Promise<{ code: number; out: string; err: string }> {
   // clearEnv so NO inherited SUPA_* (max-active, allow-multi, ram-budget, …) from
   // the developer's shell can leak in; keep only PATH (for the child's own
   // docker/supabase lookups) and the pinned config vars.
+  const sep = Deno.build.os === "windows" ? ";" : ":";
+  const basePath = Deno.env.get("PATH") ?? "";
   const env: Record<string, string> = {
-    PATH: Deno.env.get("PATH") ?? "",
+    PATH: opts.pathPrefix ? `${opts.pathPrefix}${sep}${basePath}` : basePath,
     SUPA_HOME: home,
     SUPA_REGISTRY: `${home}/supa.registry`,
     SUPA_CONFIG: `${home}/supa.config`,
@@ -648,6 +650,35 @@ Deno.test("add --init refuses a colliding --slot like ports", async () => {
   });
 });
 
+// Failed `supabase init` must roll back the registry line written for --init.
+Deno.test("add --init rolls back the registry when supabase init fails", async () => {
+  await withHome(async (home) => {
+    const proj = await Deno.makeTempDir({ prefix: "supa-initfail-" });
+    const shim = await Deno.makeTempDir({ prefix: "supa-shim-" });
+    try {
+      // Empty dir → --init will call `supabase init` (no existing config.toml).
+      const shimPath = Deno.build.os === "windows" ? `${shim}/supabase.cmd` : `${shim}/supabase`;
+      await Deno.writeTextFile(
+        shimPath,
+        Deno.build.os === "windows" ? "@echo off\r\nexit /b 1\r\n" : "#!/bin/sh\nexit 1\n",
+      );
+      if (Deno.build.os !== "windows") await Deno.chmod(shimPath, 0o755);
+      await Deno.writeTextFile(`${home}/supa.registry`, "keep|/tmp/keep\n");
+      const r = await runSupa(["add", "newproj", proj, "--init", "--slot", "5"], home, {
+        pathPrefix: shim,
+      });
+      ok(r.code === 1, `expected exit 1, got ${r.code}`);
+      ok(/supabase init' failed/.test(r.err), r.err);
+      const reg = await Deno.readTextFile(`${home}/supa.registry`);
+      ok(!reg.includes("newproj|"), "init failure must roll back the new registry row");
+      ok(reg.includes("keep|"), "pre-existing rows must survive the rollback");
+    } finally {
+      await Deno.remove(proj, { recursive: true });
+      await Deno.remove(shim, { recursive: true });
+    }
+  });
+});
+
 // Nested apps/*/config counts — --init must not scaffold a root that shadows it.
 Deno.test("add --init skips init when a nested monorepo config already exists", async () => {
   await withHome(async (home) => {
@@ -691,6 +722,45 @@ Deno.test("down refuses an unknown name before stopping any stack", async () => 
       ok(/unknown project 'nope'/.test(r.err), r.err);
     } finally {
       await Deno.remove(proj, { recursive: true });
+    }
+  });
+});
+
+// --all must not be blocked by a config-less registry row (warn + skip).
+Deno.test("down --all skips config-less projects and stops the rest", async () => {
+  await withHome(async (home) => {
+    const good = await Deno.makeTempDir({ prefix: "supa-good-" });
+    const bad = await Deno.makeTempDir({ prefix: "supa-bad-" });
+    const shim = await Deno.makeTempDir({ prefix: "supa-shim-" });
+    try {
+      await Deno.mkdir(`${good}/supabase`, { recursive: true });
+      await Deno.writeTextFile(
+        `${good}/supabase/config.toml`,
+        `project_id = "good"\n[api]\nport = 54321\n`,
+      );
+      // bad: registered path, no config.toml
+      await Deno.writeTextFile(`${home}/supa.registry`, `good|${good}\nbad|${bad}\n`);
+      const shimPath = Deno.build.os === "windows" ? `${shim}/supabase.cmd` : `${shim}/supabase`;
+      // Record stop invocations; always succeed so we don't need real docker.
+      const log = `${shim}/stops.log`;
+      await Deno.writeTextFile(
+        shimPath,
+        Deno.build.os === "windows"
+          ? `@echo off\r\necho %*>> "${log}"\r\nexit /b 0\r\n`
+          : `#!/bin/sh\nprintf '%s\\n' "$*" >> "${log}"\nexit 0\n`,
+      );
+      if (Deno.build.os !== "windows") await Deno.chmod(shimPath, 0o755);
+      const r = await runSupa(["down", "--all"], home, { pathPrefix: shim });
+      ok(r.code === 0, `expected exit 0, got ${r.code}: ${r.err}`);
+      ok(/skipping 'bad'/.test(r.err), r.err);
+      ok(/stopping good/.test(r.out), r.out);
+      ok(!/stopping bad/.test(r.out), r.out);
+      const stops = await Deno.readTextFile(log);
+      ok(/--workdir/.test(stops) && /stop/.test(stops), stops);
+    } finally {
+      await Deno.remove(good, { recursive: true });
+      await Deno.remove(bad, { recursive: true });
+      await Deno.remove(shim, { recursive: true });
     }
   });
 });

@@ -13,6 +13,7 @@ import {
   memToMiB,
   parentDir,
 } from "./util.ts";
+import { configDir, configPath, registryPath } from "./config.ts";
 import {
   applyEnvMap,
   attributeUntagged,
@@ -81,6 +82,34 @@ Deno.test("absolutize expands ~ and resolves relative against cwd", () => {
   const rel = absolutize("rel-only");
   ok(rel.endsWith(`${SEP}rel-only`), `got ${rel}`);
   ok(rel !== "rel-only", "must not stay relative");
+});
+
+// SUPA_HOME / SUPA_REGISTRY / SUPA_CONFIG must survive quoted ~ and relative paths.
+Deno.test("configDir / registryPath / configPath absolutize env overrides", () => {
+  const keys = ["SUPA_HOME", "SUPA_REGISTRY", "SUPA_CONFIG", "XDG_CONFIG_HOME"] as const;
+  const prev: Record<string, string | undefined> = {};
+  for (const k of keys) prev[k] = Deno.env.get(k);
+  try {
+    for (const k of keys) Deno.env.delete(k);
+    Deno.env.set("SUPA_HOME", "~/supa-cfg-test");
+    eq(configDir(), join(home(), "supa-cfg-test"));
+    Deno.env.set("SUPA_HOME", "rel-supa-home");
+    const d = configDir();
+    ok(d !== "rel-supa-home", "must not stay relative");
+    ok(d.endsWith(`${SEP}rel-supa-home`), `got ${d}`);
+
+    Deno.env.delete("SUPA_HOME");
+    Deno.env.set("SUPA_REGISTRY", "~/reg/supa.registry");
+    Deno.env.set("SUPA_CONFIG", "rel-supa.config");
+    eq(registryPath(), join(home(), "reg", "supa.registry"));
+    ok(configPath().endsWith(`${SEP}rel-supa.config`), configPath());
+    ok(configPath() !== "rel-supa.config");
+  } finally {
+    for (const k of keys) {
+      if (prev[k] === undefined) Deno.env.delete(k);
+      else Deno.env.set(k, prev[k]!);
+    }
+  }
 });
 
 // ---------- text decoding (BOM sniffing) --------------------------------------

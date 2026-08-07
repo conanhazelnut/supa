@@ -30,22 +30,27 @@ import {
 export type { Hooks, Limits, Project };
 
 // ---------- config-dir resolution ---------------------------------------------
+// Env overrides are absolutized (incl. ~) so a quoted `SUPA_HOME='~/…'` or a
+// relative path cannot drift when the next `supa` runs from another cwd —
+// same rule as registry roots and backup_dir.
 export function configDir(): string {
   const explicit = Deno.env.get("SUPA_HOME");
-  if (explicit) return explicit;
+  if (explicit) return absolutize(explicit);
   const xdg = Deno.env.get("XDG_CONFIG_HOME");
-  if (xdg) return join(xdg, "supa");
+  if (xdg) return join(absolutize(xdg), "supa");
   if (OS === "windows") {
     const appdata = Deno.env.get("APPDATA");
-    if (appdata) return join(appdata, "supa");
+    if (appdata) return join(absolutize(appdata), "supa");
   }
   return join(home(), ".config", "supa");
 }
 export function registryPath(): string {
-  return Deno.env.get("SUPA_REGISTRY") || join(configDir(), "supa.registry");
+  const env = Deno.env.get("SUPA_REGISTRY");
+  return env ? absolutize(env) : join(configDir(), "supa.registry");
 }
 export function configPath(): string {
-  return Deno.env.get("SUPA_CONFIG") || join(configDir(), "supa.config");
+  const env = Deno.env.get("SUPA_CONFIG");
+  return env ? absolutize(env) : join(configDir(), "supa.config");
 }
 
 // ---------- registry ----------------------------------------------------------
