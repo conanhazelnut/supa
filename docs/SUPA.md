@@ -185,15 +185,16 @@ change between versions).
   must be **up**). Default is a **full** snapshot — roles + schema + data,
   concatenated in restore order into one `<name>_<YYYY-MM-DD_HHMMSS>.sql`. Flags:
   `--data-only` / `--schema-only` / `--roles-only` (one part only; data files are
-  named `<name>_data_…`), `--use-copy` (COPY instead of INSERTs, for large data),
+  named `<name>+data_…`), `--use-copy` (COPY instead of INSERTs, for large data),
   `--out <dir>` (this run only). Output dir resolves **`--out` → `backup_dir`
   config → `<project-root>/backups/`**. Writes atomically (temp → rename), so an
   interrupted dump never leaves a usable-looking file. **Gitignore your backups
   dir** — dumps contain real data.
 - **`restore`** loads a dump into the stack's **live** DB (must be up) by piping it
   into the db container's `psql` — no host `psql` needed. Give it a file (`.sql`,
-  or `.sql.gz` — decompressed on the fly) or `--latest` (newest `.sql` / `.sql.gz`
-  in the backup dir, ignoring pre-restore snapshots).
+  or `.sql.gz` — decompressed on the fly) or `--latest` (newest **full** `.sql` /
+  `.sql.gz` in the backup dir; falls back to a typed `+data`/`+schema`/`+roles`
+  dump only if no full dump exists; ignores pre-restore and upgrade snapshots).
   Safety model, same spirit as `destroy`: it **type-name confirms** (`--yes` to
   skip), takes a **full safety pre-dump first** (`<name>_pre-restore_…`), and runs
   inside a **single transaction** — any error rolls the whole thing back, leaving

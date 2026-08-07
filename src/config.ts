@@ -2,9 +2,9 @@
 // key=value config (max_active / ram_budget), and deriving a project's docker
 // label + ports + free slot from its supabase/config.toml.
 import {
+  absolutize,
   die,
   DOCS_URL,
-  expandTilde,
   home,
   isDir,
   isFile,
@@ -93,15 +93,23 @@ export function parkedDirs(): string[] {
 export function names(): string[] {
   return readRegistry().map((p) => p.name);
 }
+// True when an explicit `name|path` line exists (park discoveries do not count).
+export function hasExplicitEntry(name: string): boolean {
+  const path = registryPath();
+  if (!isFile(path)) return false;
+  return parseRegistry(readTextFile(path)).some((e) => e.name === name);
+}
 export function rootOf(name: string): string | null {
   return readRegistry().find((p) => p.name === name)?.root ?? null;
 }
 
 // ---------- config.toml resolution (root, or apps/<x>/, or examples/<x>/) ------
-export function cfgDir(name: string): string | null {
-  const root = rootOf(name);
-  if (!root) return null;
-  if (isFile(join(root, "supabase", "config.toml"))) return root;
+// Every supabase/config.toml under a project root that cfgDir could pick. Root
+// wins; otherwise apps/* then examples/*, alphabetical within each. Multiple
+// hits mean silent wrong-stack binding risk — doctor warns.
+export function cfgCandidates(root: string): string[] {
+  const out: string[] = [];
+  if (isFile(join(root, "supabase", "config.toml"))) out.push(root);
   for (const sub of ["apps", "examples"]) {
     const base = join(root, sub);
     if (!isDir(base)) continue;
@@ -111,14 +119,19 @@ export function cfgDir(name: string): string | null {
     } catch {
       continue;
     }
-    entries.sort((a, b) => (a.name < b.name ? -1 : 1)); // deterministic first-match
+    entries.sort((a, b) => (a.name < b.name ? -1 : 1));
     for (const e of entries) {
       if (!e.isDirectory) continue;
       const d = join(base, e.name);
-      if (isFile(join(d, "supabase", "config.toml"))) return d;
+      if (isFile(join(d, "supabase", "config.toml"))) out.push(d);
     }
   }
-  return null;
+  return out;
+}
+export function cfgDir(name: string): string | null {
+  const root = rootOf(name);
+  if (!root) return null;
+  return cfgCandidates(root)[0] ?? null;
 }
 export function cfgFile(name: string): string | null {
   const wd = cfgDir(name);
@@ -191,9 +204,9 @@ export function readRamBudget(): number | null {
 }
 export function readBackupDir(): string | null {
   const env = Deno.env.get("SUPA_BACKUP_DIR");
-  if (env && env.trim() !== "") return expandTilde(env.trim());
+  if (env && env.trim() !== "") return absolutize(env.trim());
   const cfg = readConfigKV().backup_dir;
-  return cfg && cfg.trim() !== "" ? expandTilde(cfg.trim()) : null;
+  return cfg && cfg.trim() !== "" ? absolutize(cfg.trim()) : null;
 }
 
 // ---------- slots / port re-banding -------------------------------------------
@@ -203,8 +216,24 @@ export function slotOf(name: string): string | null {
 }
 // alsoTaken: bands held by containers outside supa (see foreignSlots) — a project
 // put there would fight another service for the port.
-export function nextFreeSlot(alsoTaken: Set<string> = new Set()): string | null {
-  const used = new Set(names().map(slotOf).filter((s): s is string => s !== null));
+// exceptName: when re-banding / auto-picking for one project, ignore its current
+// slot so `supa ports web` can keep an exclusive band (and not false-refuse when
+// 1–9 are otherwise full).
+export function nextFreeSlot(
+  alsoTaken: Set<string> = new Set(),
+  exceptName?: string,
+): string | null {
+  const used = new Set(
+    names()
+      .filter((n) => n !== exceptName)
+      .map(slotOf)
+      .filter((s): s is string => s !== null),
+  );
+  // Prefer the project's current band when it is free of foreign/other clash.
+  if (exceptName) {
+    const cur = slotOf(exceptName);
+    if (cur && cur !== "0" && !used.has(cur) && !alsoTaken.has(cur)) return cur;
+  }
   for (let d = 1; d <= 9; d++) {
     const s = String(d);
     if (!used.has(s) && !alsoTaken.has(s)) return s;

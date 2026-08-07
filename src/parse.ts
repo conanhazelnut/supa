@@ -1,6 +1,6 @@
 // Pure text parsers (registry, config.toml, dotenv, port re-banding, signing key).
 // Everything here is side-effect-free and unit-tested in lib_test.ts.
-import { escapeRegExp, expandTilde, join } from "./util.ts";
+import { absolutize, escapeRegExp, expandTilde, join, pathIsAbsolute } from "./util.ts";
 
 export interface Project {
   name: string;
@@ -14,7 +14,9 @@ export interface Project {
 export const SAFE_NAME = /^[A-Za-z0-9._-]+$/;
 
 // Parse registry text into projects (skips comments/blank/malformed lines and
-// names outside SAFE_NAME, expands a leading ~). `*` names parked dirs.
+// names outside SAFE_NAME). Expands ~ and resolves relative paths against cwd so
+// hand-edited / pre-fix relative entries still work from another directory.
+// `*` names parked dirs.
 export function parseRegistry(text: string): Project[] {
   const out: Project[] = [];
   for (const raw of text.split(/\r?\n/)) {
@@ -24,7 +26,28 @@ export function parseRegistry(text: string): Project[] {
     if (i < 1) continue; // no pipe, or empty name -> malformed, skip
     const name = line.slice(0, i).trim();
     if (name !== "*" && !SAFE_NAME.test(name)) continue;
-    out.push({ name, root: expandTilde(line.slice(i + 1).trim()) });
+    out.push({ name, root: absolutize(line.slice(i + 1).trim()) });
+  }
+  return out;
+}
+
+// Well-formed registry lines whose path is still relative after ~ expansion —
+// doctor surfaces these so a hand-edited relative root isn't a silent landmine
+// (runtime absolutizes against whatever cwd happens to be current).
+export function relativeRegistryEntries(
+  text: string,
+): Array<{ name: string; path: string }> {
+  const out: Array<{ name: string; path: string }> = [];
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (line === "" || line.startsWith("#")) continue;
+    const i = line.indexOf("|");
+    if (i < 1) continue;
+    const name = line.slice(0, i).trim();
+    if (name !== "*" && !SAFE_NAME.test(name)) continue;
+    const path = line.slice(i + 1).trim();
+    const expanded = expandTilde(path);
+    if (expanded !== "" && !pathIsAbsolute(expanded)) out.push({ name, path });
   }
   return out;
 }
@@ -47,8 +70,8 @@ export function droppedRegistryNames(text: string): string[] {
 // Read project_id (the docker label) from config.toml text.
 export function parseLabel(text: string): string | null {
   for (const line of text.split(/\r?\n/)) {
-    const m = line.match(/^\s*project_id\s*=\s*"?([^"\s]+)"?/);
-    if (m) return m[1];
+    const m = line.match(/^\s*project_id\s*=\s*(?:"([^"]+)"|'([^']+)'|([^\s#'"]+))/);
+    if (m) return m[1] ?? m[2] ?? m[3];
   }
   return null;
 }
@@ -259,38 +282,52 @@ export function tsStamp(d: Date): string {
   }${p(d.getSeconds())}`;
 }
 
-// `<name>_<stamp>.sql` for full, `<name>_<type>_<stamp>.sql` for a single part.
+// `<name>_<stamp>.sql` for full; `<name>+<type>_<stamp>.sql` for a single part.
+// `+` is outside SAFE_NAME, so a typed dump can never collide with another
+// project's full dump (`shop_data` / `shop__data` are both legal names).
 export function backupFileName(name: string, type: BackupType, stamp: string): string {
-  const suffix = type === "full" ? "" : `_${type}`;
+  const suffix = type === "full" ? "" : `+${type}`;
   return `${name}${suffix}_${stamp}.sql`;
 }
 
 // Resolve where dumps go: an explicit --out wins, then the backup_dir config,
-// then `<project-root>/backups/`. Throws if none is available.
+// then `<project-root>/backups/`. Throws if none is available. Paths are made
+// absolute so a relative --out / configured dir survives a later cwd change.
 export function resolveBackupDir(
   opts: { out?: string | null; configured?: string | null; projectRoot?: string | null },
 ): string {
-  if (opts.out) return expandTilde(opts.out);
-  if (opts.configured) return expandTilde(opts.configured);
+  if (opts.out) return absolutize(opts.out);
+  if (opts.configured) return absolutize(opts.configured);
   if (opts.projectRoot) return join(opts.projectRoot, "backups");
   throw new Error("cannot resolve a backup directory");
 }
 
-// Newest backup for `name` from a list of filenames. Sorts by the trailing
-// `YYYY-MM-DD_HHMM[SS]` stamp (NOT the whole filename — a `_data_` type suffix would
-// otherwise sort a data dump after a same-day full one), and excludes safety
-// pre-restore dumps so `--latest` never picks the snapshot a restore just took.
-// Accepts `.sql` and `.sql.gz` (restore decompresses gzip on the fly).
+// Newest backup for `name` from a list of filenames. Prefers the newest **full**
+// dump (`<name>_<stamp>.sql`); falls back to typed parts (`<name>+<type>_<stamp>`)
+// only when no full dump exists. Never a longer name that shares a prefix
+// (`app` must not pick `app_web_…`). Legacy `_type_` / `__type_` layouts and
+// upgrade snapshots are not auto-selected — restore by path. Excludes safety
+// pre-restore dumps. Accepts `.sql` and `.sql.gz`.
 export function latestBackup(files: string[], name: string): string | null {
-  const stampOf = (f: string): string =>
-    f.match(/(\d{4}-\d{2}-\d{2}_\d{4}(?:\d{2})?)\.sql(?:\.gz)?$/)?.[1] ?? "";
-  const mine = files
-    .filter((f) =>
-      f.startsWith(`${name}_`) && (f.endsWith(".sql") || f.endsWith(".sql.gz")) &&
-      !f.includes("_pre-restore_") && stampOf(f) !== ""
-    )
-    .sort((a, b) => (stampOf(a) < stampOf(b) ? -1 : stampOf(a) > stampOf(b) ? 1 : 0));
-  return mine.length ? mine[mine.length - 1] : null;
+  const stampRe = /(\d{4}-\d{2}-\d{2}_\d{4}(?:\d{2})?)\.sql(?:\.gz)?$/;
+  const stampOf = (f: string): string => f.match(stampRe)?.[1] ?? "";
+  const byStamp = (a: string, b: string) =>
+    stampOf(a) < stampOf(b) ? -1 : stampOf(a) > stampOf(b) ? 1 : 0;
+  const fullRe = new RegExp(
+    `^${escapeRegExp(name)}_\\d{4}-\\d{2}-\\d{2}_\\d{4}(?:\\d{2})?\\.sql(?:\\.gz)?$`,
+  );
+  const typedRe = new RegExp(
+    `^${escapeRegExp(name)}\\+(?:data|schema|roles)_` +
+      `\\d{4}-\\d{2}-\\d{2}_\\d{4}(?:\\d{2})?\\.sql(?:\\.gz)?$`,
+  );
+  const pick = (re: RegExp) =>
+    files
+      .filter((f) => re.test(f) && !f.includes("_pre-restore_") && stampOf(f) !== "")
+      .sort(byStamp);
+  const full = pick(fullRe);
+  if (full.length) return full[full.length - 1];
+  const typed = pick(typedRe);
+  return typed.length ? typed[typed.length - 1] : null;
 }
 
 // ---------- restore hooks (per-project supa.hooks, pure parse) -----------------
@@ -462,14 +499,42 @@ export function foreignSlotHolders(text: string): Map<string, string[]> {
   return out;
 }
 
+/** True when starting `needStartCount` new stacks would push past max-active.
+ * `needStartCount === 0` is always allowed (re-up / restart of already-up only),
+ * even if `runningCount` is already over max. */
+export function exceedsMaxActive(
+  max: number,
+  runningCount: number,
+  needStartCount: number,
+): boolean {
+  if (max === Infinity || needStartCount === 0) return false;
+  return runningCount + needStartCount > max;
+}
+
+// First occurrence wins — `supa up web web` must not count as two starts.
+export function uniqueNames(names: string[]): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const n of names) {
+    if (seen.has(n)) continue;
+    seen.add(n);
+    out.push(n);
+  }
+  return out;
+}
+
 // Ensure config.toml has an active signing_keys_path; return updated text + path.
 export function ensureSigningKeysPath(text: string): { text: string; relPath: string } {
-  const active = text.match(/^\s*signing_keys_path\s*=\s*"([^"]+)"/m);
-  if (active) return { text, relPath: active[1] };
-  const commented = /^([ \t]*)#\s*signing_keys_path\s*=\s*"([^"]+)"/m;
+  const active = text.match(/^\s*signing_keys_path\s*=\s*(?:"([^"]+)"|'([^']+)')/m);
+  if (active) return { text, relPath: active[1] ?? active[2] };
+  const commented = /^([ \t]*)#\s*signing_keys_path\s*=\s*(?:"([^"]+)"|'([^']+)')/m;
   const cm = text.match(commented);
   if (cm) {
-    return { text: text.replace(commented, `$1signing_keys_path = "${cm[2]}"`), relPath: cm[2] };
+    const path = cm[2] ?? cm[3];
+    return {
+      text: text.replace(commented, `$1signing_keys_path = "${path}"`),
+      relPath: path,
+    };
   }
   const rel = "./signing_keys.json";
   const authHeader = /^[ \t]*\[auth\][ \t]*(#.*)?$/m;

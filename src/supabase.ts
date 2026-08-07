@@ -2,7 +2,7 @@
 // (never through a shell), and the start/stop/max-active lifecycle.
 import { die, escapeRegExp, home, isFile, join, OS } from "./util.ts";
 import { cfgDir, labelOf, names, readHooks, readLimits, readMaxActive, rootOf } from "./config.ts";
-import { foreignSlotHolders } from "./parse.ts";
+import { exceedsMaxActive, foreignSlotHolders, uniqueNames } from "./parse.ts";
 
 export const SUPABASE_MISSING =
   "Supabase CLI not found on PATH — install it: https://supabase.com/docs/guides/local-development";
@@ -71,7 +71,9 @@ export async function runInherit(cmd: string, args: string[]): Promise<number> {
 }
 // Run a command, streaming a file into its stdin (inherit stdout/stderr).
 // Used to feed a .sql dump into the db container's psql; a .gz file is
-// decompressed on the fly. 127 == spawn failure.
+// decompressed on the fly. 127 == spawn failure. A feed failure (missing file,
+// corrupt gzip, …) never reports success just because psql exited 0 on empty
+// stdin — only a broken pipe from psql closing early is ignored.
 export async function runStdinFile(cmd: string, args: string[], file: string): Promise<number> {
   let child: Deno.ChildProcess;
   try {
@@ -84,21 +86,25 @@ export async function runStdinFile(cmd: string, args: string[], file: string): P
   } catch {
     return 127;
   }
+  let feedFailed = false;
   try {
     const f = await Deno.open(file, { read: true });
     const src = file.endsWith(".gz")
       ? f.readable.pipeThrough(new DecompressionStream("gzip"))
       : f.readable;
     await src.pipeTo(child.stdin); // closes stdin (EOF) when the file ends
-  } catch {
-    // psql may close stdin early on error; ignore the broken pipe and let the
-    // exit code below report the failure. But if the file never opened, stdin is
-    // still live — close it, or psql waits on stdin forever and we hang here.
+  } catch (e) {
+    // psql may close stdin early on error — broken pipe is expected; trust exit.
+    // Anything else (open/decompress/pipe failure) means we never fed a dump.
+    const brokenPipe = e instanceof Deno.errors.BrokenPipe ||
+      (e instanceof Error && /broken pipe/i.test(e.message));
+    if (!brokenPipe) feedFailed = true;
     try {
       await child.stdin.close();
     } catch { /* already closed by pipeTo */ }
   }
   const { code } = await child.status;
+  if (feedFailed) return code === 0 ? 1 : code;
   return code;
 }
 // Find the Postgres container for a stack (service container `supabase_db_<label>`).
@@ -197,7 +203,12 @@ export async function applyLimits(name: string): Promise<number> {
 // Run a project-declared hook. Hooks are the ONE place supa uses a shell — the
 // command is user-authored config (like a Makefile target), run in the project
 // dir, so this is a deliberate, trusted exception to the no-shell rule.
-export async function runHook(kind: string, cmd: string, cwd: string): Promise<void> {
+export async function runHook(
+  kind: string,
+  cmd: string,
+  cwd: string,
+  opts?: { failHint?: string },
+): Promise<void> {
   console.log(`  hook (${kind}): ${cmd}`);
   const [sh, flag] = OS === "windows" ? ["cmd", "/c"] : ["sh", "-c"];
   let code: number;
@@ -212,23 +223,37 @@ export async function runHook(kind: string, cmd: string, cwd: string): Promise<v
   } catch {
     code = 127;
   }
-  if (code !== 0) die(`${kind} hook failed (exit ${code}): ${cmd}`);
+  if (code !== 0) {
+    const hint = opts?.failHint ? `\n${opts.failHint}` : "";
+    die(`${kind} hook failed (exit ${code}): ${cmd}${hint}`);
+  }
 }
 
-export async function startStack(name: string): Promise<void> {
+export async function startStack(
+  name: string,
+  opts?: { failHint?: string; failHintAfterStart?: string },
+): Promise<void> {
   const wd = cfgDir(name);
   if (!wd) die(`no supabase/config.toml under '${rootOf(name)}' for '${name}'`);
+  const preHint = opts?.failHint ? { failHint: opts.failHint } : undefined;
+  const postHint = opts?.failHintAfterStart ? { failHint: opts.failHintAfterStart } : preHint;
   const hooks = readHooks(wd);
-  if (hooks.upPre) await runHook("up.pre", hooks.upPre, wd);
+  if (hooks.upPre) await runHook("up.pre", hooks.upPre, wd, preHint);
   console.log(`>> starting ${name}  (${wd})`);
   const code = await runInherit(supabaseCmd(), ["--workdir", wd, "start"]);
-  if (code === 127) die(SUPABASE_MISSING);
-  if (code !== 0) die(`supabase start failed for '${name}' (exit ${code})`);
+  if (code === 127) {
+    const hint = opts?.failHint ? `\n${opts.failHint}` : "";
+    die(SUPABASE_MISSING + hint);
+  }
+  if (code !== 0) {
+    const hint = opts?.failHint ? `\n${opts.failHint}` : "";
+    die(`supabase start failed for '${name}' (exit ${code})${hint}`);
+  }
   const lbl = labelOf(name);
   if (lbl) await pinNoRestart(lbl);
   const n = await applyLimits(name);
   if (n) console.log(`  applied resource limits to ${n} container(s)  (supa.limits)`);
-  if (hooks.upPost) await runHook("up.post", hooks.upPost, wd);
+  if (hooks.upPost) await runHook("up.post", hooks.upPost, wd, postHint);
 }
 export async function stopStack(name: string): Promise<void> {
   const wd = cfgDir(name);
@@ -279,13 +304,19 @@ export async function guardMany(toStart: string[]): Promise<void> {
   const running = await runningLabels();
   const runningSet = new Set(running);
   const needStart: string[] = [];
-  for (const name of toStart) {
+  for (const name of uniqueNames(toStart)) {
     const lbl = labelOf(name);
     if (lbl && runningSet.has(lbl)) continue;
     needStart.push(name);
   }
-  const needSlots = running.length + needStart.length;
-  if (needSlots <= max) return;
-  const want = needStart[0] ?? toStart[0];
-  printMaxActiveHelp(max, source, running, want, needSlots);
+  // Already-up only (or empty list): net-zero — allow even if the host is
+  // currently over max (e.g. max was lowered while stacks were still running).
+  if (!exceedsMaxActive(max, running.length, needStart.length)) return;
+  printMaxActiveHelp(
+    max,
+    source,
+    running,
+    needStart[0],
+    running.length + needStart.length,
+  );
 }

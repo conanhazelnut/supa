@@ -14,11 +14,75 @@ All notable changes to supa are documented here. This project adheres to
   path no longer breaks later invocations from another working directory.
 - `supa restore --latest` recognizes `.sql.gz` dumps (and second-precision
   stamps), not only `.sql`.
+- `supa restore --latest` matches only the named project's dumps — a prefix
+  name (`app`) no longer steals a longer project's file (`app_web_…`).
+- `supa restore --latest` prefers the newest full dump over newer typed parts
+  or upgrade snapshots; falls back to typed only when no full dump exists.
+- `supa config backup-dir` (and `SUPA_BACKUP_DIR` / `--out`) store/resolve
+  absolute paths, same as `add` / `park`.
+- `supa add` / `supa park` create the config dir and an empty registry when
+  missing (first-run without an install seed); flag values (`--out`, `--db`,
+  `--to`, `--slot`) require a following non-flag argument.
+- Registry paths are absolutized on read; `supa doctor` flags relative roots
+  and multiple `config.toml` candidates under one project.
+- `supa restart` / `supa up` of stacks that are already up is allowed even when
+  the host is currently over max-active (net-zero; e.g. after lowering the limit).
+- `supa backup` rejects unknown flags (e.g. a typo `--data`).
+- `supa pg-upgrade` / `supa restore` reject unknown flags so a mistyped
+  `--dry-run` (with `--yes`) cannot become a live destructive run.
+- `supa up` / `supa restart` deduplicate project names so `supa up web web`
+  counts as one start under max-active (not a false refusal).
+- `supa help restore` documents `--latest`'s prefer-full / typed-fallback
+  behavior (aligned with `docs/SUPA.md`).
+- `supa up` / `restart` / `down` preflight `config.toml` for every name before
+  mutating any stack (same as `switch`), so a registered-but-uninit project
+  cannot leave earlier stacks half-applied.
+- `supa pg-upgrade` step 5 (start after volume drop) prints snapshot +
+  `config.toml.bak` recovery hints on failure.
+- `supa rm` refuses park-discovered names (use `unpark`); removing an explicit
+  override that a parked dir still exposes warns instead of claiming a full
+  unregister.
+- `project_id` parsing accepts single-quoted TOML values; `destroy` refuses
+  when `project_id` cannot be resolved (no silent fallback to the registry name).
+- `supa add --init` applies the same slot clash / foreign-container checks as
+  `ports`, and dies when no free slot remains (no silent leave-on-54321).
+- `supa pg-upgrade` restore hooks after the volume drop print the same recovery
+  hints as a failed start (snapshot + `config.toml.bak`).
+- Slot-clash errors from `add --init` no longer advertise `--force` (unsupported
+  there); `pg-upgrade` `restore.post` failures no longer claim the DB is empty.
+- `supa add --init` resolves and asserts the port slot before writing the
+  registry (or running init), so a clash leaves no half-applied entry.
+- `supa add` may override a park-discovered name (explicit entry wins), matching
+  docs / `rm` override semantics.
+- Corrupt or misnamed `.sql.gz` feeds no longer make restore/pg-upgrade report
+  success when psql only saw empty stdin.
+- `supa park` warns when a subdir name is shadowed by an existing entry, instead
+  of listing it under `discovered:`.
+- `supa switch` refuses a missing/unparseable `project_id` before stopping any
+  running stack (same class as destroy's null-label guard).
+- `pg-upgrade` step-5 recovery hints also attach when `up.pre` / `up.post` or a
+  missing Supabase CLI fails inside `startStack`.
+- `ensureSigningKeysPath` (used by `rotate`) recognizes single-quoted
+  `signing_keys_path` values, so it no longer inserts a duplicate path / writes
+  the new key to the wrong file.
+- `supa ports` auto-pick ignores the target project's own slot (and prefers it
+  when free), so a full 1–9 map no longer false-refuses the project already on 9.
+- `pg-upgrade` post-start recovery hints no longer advise reverting
+  `config.toml` after the stack is already on the new major.
+- `supa logs` matches services by service token only (not a substring of the
+  project label).
+- `supa unpark` parses `* |path` spacing the same way as the registry reader.
+- `supa add --init` skips init when a nested `apps/*` / `examples/*` config
+  already exists, so it does not scaffold a shadowing root stack.
 
 ### Changed
 
 - Backup / pre-restore / upgrade snapshot filenames use `YYYY-MM-DD_HHMMSS`
   (seconds) so two dumps in the same minute no longer collide.
+- Typed (data/schema/roles) backup filenames use `<name>+<type>_<stamp>.sql`
+  (`+` is outside the project-name charset) so they cannot collide with any
+  legal project name. Legacy `_type_` / `__type_` files are not selected by
+  `--latest` (restore them by explicit path).
 
 ## [0.1.3] — 2026-08-07
 

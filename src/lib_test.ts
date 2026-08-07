@@ -19,6 +19,7 @@ import {
   backupFileName,
   droppedRegistryNames,
   ensureSigningKeysPath,
+  exceedsMaxActive,
   foreignSlotHolders,
   imageInUse,
   isReleaseTag,
@@ -34,13 +35,16 @@ import {
   parsePort,
   parseRegistry,
   rebandText,
+  relativeRegistryEntries,
   releaseAsset,
   resolveBackupDir,
+  SAFE_NAME,
   semverNewer,
   setMajorVersion,
   shaFor,
   signingKeyArray,
   tsStamp,
+  uniqueNames,
 } from "./parse.ts";
 
 function eq<T>(actual: T, expected: T, msg = ""): void {
@@ -121,6 +125,18 @@ Deno.test("parseRegistry expands a leading tilde", () => {
   const reg = parseRegistry("x|~/proj");
   eq(reg[0].root, join(home(), "proj"));
 });
+Deno.test("parseRegistry absolutizes a relative path against cwd", () => {
+  const reg = parseRegistry("x|rel-only");
+  ok(reg[0].root.endsWith(`${SEP}rel-only`), reg[0].root);
+  ok(reg[0].root !== "rel-only", "must not stay relative");
+});
+Deno.test("relativeRegistryEntries lists paths that are still relative after ~", () => {
+  eq(relativeRegistryEntries("abs|/code/web\nrel|./here\n*|~/ok\n"), [
+    { name: "rel", path: "./here" },
+  ]);
+  // ~/ expands to absolute home — not reported
+  eq(relativeRegistryEntries("home|~/proj\n"), []);
+});
 Deno.test("parseRegistry passes parked (*|dir) lines through", () => {
   const reg = parseRegistry("web|/code/web\n*|/code\n");
   eq(reg, [{ name: "web", root: "/code/web" }, { name: "*", root: "/code" }]);
@@ -193,6 +209,8 @@ port = 54323
 Deno.test("parseLabel reads project_id (quoted & unquoted)", () => {
   eq(parseLabel(CFG), "myproj");
   eq(parseLabel("project_id = bare\n"), "bare");
+  eq(parseLabel("project_id = 'single'\n"), "single");
+  eq(parseLabel(`project_id = "double"\n`), "double");
   eq(parseLabel("[api]\nport = 1\n"), null);
 });
 Deno.test("parsePort respects section boundaries", () => {
@@ -306,6 +324,20 @@ Deno.test("ensureSigningKeysPath keeps an already-active line", () => {
   eq(text, src);
   eq(relPath, "./keys.json");
 });
+Deno.test("ensureSigningKeysPath keeps a single-quoted active line (no duplicate)", () => {
+  const src = `[auth]\nsigning_keys_path = './keys.json'\n`;
+  const { text, relPath } = ensureSigningKeysPath(src);
+  eq(text, src);
+  eq(relPath, "./keys.json");
+});
+Deno.test("ensureSigningKeysPath uncomments a single-quoted commented line", () => {
+  const { text, relPath } = ensureSigningKeysPath(
+    `[auth]\n# signing_keys_path = './alt-keys.json'\n`,
+  );
+  eq(relPath, "./alt-keys.json");
+  ok(/^signing_keys_path = "\.\/alt-keys\.json"$/m.test(text));
+  ok(!/#\s*signing_keys_path/.test(text));
+});
 Deno.test("ensureSigningKeysPath inserts under [auth] when absent", () => {
   const { text } = ensureSigningKeysPath(`[auth]\nenabled = true\n`);
   ok(text.includes(`signing_keys_path = "./signing_keys.json"`));
@@ -363,11 +395,21 @@ Deno.test("tsStamp formats local time as YYYY-MM-DD_HHMMSS", () => {
   eq(tsStamp(new Date(2026, 6, 14, 1, 30, 7)), "2026-07-14_013007"); // month is 0-based
   eq(tsStamp(new Date(2026, 11, 3, 9, 5, 0)), "2026-12-03_090500"); // zero-padding
 });
-Deno.test("backupFileName: full has no type suffix, parts do", () => {
+Deno.test("backupFileName: full has no type suffix, parts use +type_", () => {
   eq(backupFileName("larp", "full", "2026-07-14_013007"), "larp_2026-07-14_013007.sql");
-  eq(backupFileName("larp", "data", "2026-07-14_013007"), "larp_data_2026-07-14_013007.sql");
-  eq(backupFileName("pams", "schema", "2026-07-14_013007"), "pams_schema_2026-07-14_013007.sql");
-  eq(backupFileName("pams", "roles", "2026-07-14_013007"), "pams_roles_2026-07-14_013007.sql");
+  eq(backupFileName("larp", "data", "2026-07-14_013007"), "larp+data_2026-07-14_013007.sql");
+  eq(backupFileName("pams", "schema", "2026-07-14_013007"), "pams+schema_2026-07-14_013007.sql");
+  eq(backupFileName("pams", "roles", "2026-07-14_013007"), "pams+roles_2026-07-14_013007.sql");
+  // Must not collide with projects literally named shop_data or shop__data
+  ok(
+    backupFileName("shop", "data", "T") !== backupFileName("shop_data", "full", "T"),
+    "typed dump must not share a path with shop_data full",
+  );
+  ok(
+    backupFileName("shop", "data", "T") !== backupFileName("shop__data", "full", "T"),
+    "typed dump must not share a path with shop__data full",
+  );
+  ok(!SAFE_NAME.test("shop+data"), "+ is outside the project-name charset");
 });
 Deno.test("resolveBackupDir precedence: out > configured > project/backups", () => {
   eq(resolveBackupDir({ out: "/x", configured: "/y", projectRoot: "/z" }), "/x");
@@ -389,8 +431,10 @@ Deno.test("resolveBackupDir throws when nothing resolves", () => {
 Deno.test("latestBackup picks the newest and ignores pre-restore + other projects", () => {
   const files = [
     "larp_2026-07-10_0900.sql",
-    "larp_2026-07-14_1200.sql", // newest for larp (minute-precision, legacy)
-    "larp_data_2026-07-12_0800.sql",
+    "larp_2026-07-14_1200.sql", // newest for larp (minute-precision, legacy stamp)
+    "larp+data_2026-07-13_0800.sql", // typed layout
+    "larp_data_2026-07-16_0800.sql", // OLD typed layout — must NOT auto-match
+    "larp__data_2026-07-17_0800.sql", // WIP __ layout — must NOT auto-match
     "larp_pre-restore_2026-07-20_0000.sql", // must be ignored
     "pams_2026-07-19_0000.sql", // different project
     "notes.txt",
@@ -398,6 +442,44 @@ Deno.test("latestBackup picks the newest and ignores pre-restore + other project
   eq(latestBackup(files, "larp"), "larp_2026-07-14_1200.sql");
   eq(latestBackup(files, "pams"), "pams_2026-07-19_0000.sql");
   eq(latestBackup(files, "nope"), null);
+});
+Deno.test("latestBackup does not steal a longer project's dump via prefix", () => {
+  const files = [
+    "app_2026-07-14_120000.sql",
+    "app_web_2026-07-15_120000.sql", // must stay app_web's, never app's
+  ];
+  eq(latestBackup(files, "app"), "app_2026-07-14_120000.sql");
+  eq(latestBackup(files, "app_web"), "app_web_2026-07-15_120000.sql");
+});
+Deno.test("latestBackup does not treat shop_data / shop__data full dumps as shop's data", () => {
+  const files = [
+    "shop+data_2026-07-14_120000.sql", // shop's typed dump
+    "shop_data_2026-07-15_120000.sql", // project shop_data's full dump
+    "shop__data_2026-07-16_120000.sql", // project shop__data's full dump
+  ];
+  eq(latestBackup(files, "shop"), "shop+data_2026-07-14_120000.sql");
+  eq(latestBackup(files, "shop_data"), "shop_data_2026-07-15_120000.sql");
+  eq(latestBackup(files, "shop__data"), "shop__data_2026-07-16_120000.sql");
+  eq(latestBackup(["shop_data_2026-07-15_120000.sql"], "shop"), null);
+  eq(latestBackup(["shop__data_2026-07-16_120000.sql"], "shop"), null);
+});
+Deno.test("latestBackup prefers full dumps over newer typed / upgrade snapshots", () => {
+  const files = [
+    "larp_2026-07-14_120000.sql", // full — must win even if typed/upgrade are newer
+    "larp+data_2026-07-15_120000.sql",
+    "larp_upgrade-15-to-16_2026-07-16_120000.sql",
+  ];
+  eq(latestBackup(files, "larp"), "larp_2026-07-14_120000.sql");
+  // No full → fall back to newest typed
+  eq(
+    latestBackup(
+      ["larp+schema_2026-07-10_000000.sql", "larp+data_2026-07-11_000000.sql"],
+      "larp",
+    ),
+    "larp+data_2026-07-11_000000.sql",
+  );
+  // Upgrade-only → nothing (restore by explicit path)
+  eq(latestBackup(["larp_upgrade-15-to-16_2026-07-16_120000.sql"], "larp"), null);
 });
 Deno.test("latestBackup prefers .sql.gz when it is newer, and accepts second-precision stamps", () => {
   const files = [
@@ -409,6 +491,11 @@ Deno.test("latestBackup prefers .sql.gz when it is newer, and accepts second-pre
 });
 Deno.test("latestBackup returns null when only a pre-restore dump exists", () => {
   eq(latestBackup(["larp_pre-restore_2026-07-20_0000.sql"], "larp"), null);
+});
+Deno.test("resolveBackupDir absolutizes a relative --out / configured path", () => {
+  const out = resolveBackupDir({ out: "rel-dumps" });
+  ok(out.endsWith(`${SEP}rel-dumps`), out);
+  ok(out !== "rel-dumps", "must not stay relative");
 });
 Deno.test("parseHooks reads restore hooks + backup type, skips junk", () => {
   const h = parseHooks(
@@ -541,4 +628,16 @@ Deno.test("parseLimits reads per-service memory/cpus, skips malformed", () => {
 });
 Deno.test("parseLimits returns empty for blank/comment input", () => {
   eq(parseLimits("\n# nope\n"), {});
+});
+Deno.test("exceedsMaxActive allows net-zero even when already over max", () => {
+  ok(!exceedsMaxActive(1, 3, 0), "restart/re-up of already-up only");
+  ok(!exceedsMaxActive(2, 1, 1), "room for one more");
+  ok(exceedsMaxActive(1, 1, 1), "would start a second under max=1");
+  ok(exceedsMaxActive(1, 0, 2), "batch of two under max=1");
+  ok(!exceedsMaxActive(Infinity, 99, 99), "unlimited");
+});
+Deno.test("uniqueNames keeps first occurrence order", () => {
+  eq(uniqueNames(["a", "b", "a", "c", "b"]), ["a", "b", "c"]);
+  eq(uniqueNames([]), []);
+  eq(uniqueNames(["x"]), ["x"]);
 });

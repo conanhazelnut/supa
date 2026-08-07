@@ -13,6 +13,7 @@ import {
   maskSecret,
   memToMiB,
   OS,
+  parentDir,
   readTextFile,
   REPO,
   VERSION,
@@ -31,6 +32,7 @@ import {
   mergeDotenv,
   parseImageRows,
   parseMajorVersion,
+  relativeRegistryEntries,
   releaseAsset,
   resolveBackupDir,
   SAFE_NAME,
@@ -39,12 +41,15 @@ import {
   shaFor,
   signingKeyArray,
   tsStamp,
+  uniqueNames,
 } from "./parse.ts";
 import {
+  cfgCandidates,
   cfgDir,
   cfgFile,
   configDir,
   configPath,
+  hasExplicitEntry,
   labelOf,
   names,
   nextFreeSlot,
@@ -83,6 +88,58 @@ import {
 function requireProject(p: string): void {
   if (rootOf(p) === null) die(`unknown project '${p}' (known: ${names().join(" ")})`);
 }
+// Registered is not enough — start/stop need a resolvable config.toml (same as switch).
+function requireCfg(p: string): void {
+  if (!cfgDir(p)) die(`no supabase/config.toml under '${rootOf(p)}' for '${p}'`);
+}
+// Shared by `ports` and `add --init`: refuse a slot held by another project or a
+// foreign container unless force is set. `allowForce` controls whether the error
+// advertises `--force` (ports) or another --slot (add, which has no --force).
+function assertSlotAvailable(
+  name: string,
+  slot: string,
+  foreign: Map<string, string[]>,
+  opts: { force: boolean; allowForce: boolean },
+): void {
+  const alt = opts.allowForce
+    ? "or pass --force to override anyway"
+    : "or pick another --slot / omit --slot to auto-pick";
+  const clash = names().filter((n) => n !== name && slotOf(n) === slot);
+  if (clash.length && !opts.force) {
+    die(
+      `slot ${slot} (543${slot}X) is already used by ${clash.join(", ")}.\n` +
+        `  omit the slot to auto-pick a free one, ${alt}.`,
+    );
+  }
+  const held = foreign.get(slot);
+  if (held && !opts.force) {
+    const forceAlt = opts.allowForce
+      ? "or pass --force to take it anyway\n" +
+        `  (the stack won't start while they hold the port).`
+      : "or pick another --slot / omit --slot to auto-pick\n" +
+        `  (the stack won't start while they hold the port).`;
+    die(
+      `slot ${slot} (543${slot}X) is published by non-Supabase container(s): ${
+        held.join(", ")
+      }.\n` +
+        `  omit the slot to auto-pick a free band, ${forceAlt}`,
+    );
+  }
+}
+function requireArg(rest: string[], i: number, usage: string): string {
+  const v = rest[i];
+  if (v === undefined || v.startsWith("-")) die(usage);
+  return v;
+}
+// First-run bootstrap: mkdir SUPA_HOME and create an empty registry so `add` /
+// `park` work without an install-seeded file (install.sh curl can fail closed).
+function ensureRegistry(): void {
+  const reg = registryPath();
+  try {
+    Deno.mkdirSync(parentDir(reg), { recursive: true });
+  } catch { /* exists */ }
+  if (!isFile(reg)) Deno.writeTextFileSync(reg, "");
+}
 // Append a captured stderr tail to a failure message, so the underlying tool's
 // own error (docker daemon down, CLI update notice, …) isn't swallowed.
 function withStderr(msg: string, err: string): string {
@@ -100,17 +157,23 @@ export async function cmdUp(rest: string[]): Promise<void> {
   if (rest.length < 1) die("usage: supa up <project...>");
   // Validate every name + the max-active budget BEFORE starting anyone, so a
   // later failure can't leave earlier stacks up under a broken partial run.
-  for (const p of rest) requireProject(p);
-  await guardMany(rest);
-  for (const p of rest) await startStack(p);
+  // Deduplicate so `supa up web web` is one start, not a false max-active hit.
+  const list = uniqueNames(rest);
+  for (const p of list) {
+    requireProject(p);
+    requireCfg(p);
+  }
+  await guardMany(list);
+  for (const p of list) await startStack(p);
 }
 export async function cmdDown(rest: string[]): Promise<void> {
   if (rest.length < 1) die("usage: supa down <project...> | supa down --all");
   const list = rest[0] === "--all" ? names() : rest;
-  // Same preflight as up: refuse the whole list if any name is unknown, so we
-  // never stop A then die on B and leave the registry half-acted-on.
-  if (rest[0] !== "--all") {
-    for (const p of list) requireProject(p);
+  // Same preflight as up: refuse the whole list if any name is unknown or has
+  // no config.toml, so we never stop A then die on B mid-list.
+  for (const p of list) {
+    if (rest[0] !== "--all") requireProject(p);
+    requireCfg(p);
   }
   for (const p of list) await stopStack(p);
 }
@@ -122,6 +185,7 @@ export async function cmdSwitch(rest: string[]): Promise<void> {
   // tear down every running stack and then fail.
   if (!cfgDir(target)) die(`no supabase/config.toml under '${rootOf(target)}' for '${target}'`);
   const tgt = labelOf(target);
+  if (!tgt) die(`cannot resolve project_id for '${target}'`);
   for (const l of await runningLabels()) {
     if (l === tgt) continue;
     const nm = nameForLabel(l);
@@ -132,13 +196,17 @@ export async function cmdSwitch(rest: string[]): Promise<void> {
 }
 export async function cmdRestart(rest: string[]): Promise<void> {
   if (rest.length < 1) die("usage: supa restart <project...>");
-  for (const p of rest) requireProject(p);
+  const list = uniqueNames(rest);
+  for (const p of list) {
+    requireProject(p);
+    requireCfg(p);
+  }
   // Same preflight as up: starting every currently-down name in this list must
   // fit under max-active (already-up ones are net-zero). Refuse the whole batch
   // before stopping/starting anyone.
-  await guardMany(rest);
+  await guardMany(list);
   const running = await runningLabels();
-  for (const p of rest) {
+  for (const p of list) {
     const lbl = labelOf(p);
     const wasRunning = !!lbl && running.includes(lbl);
     if (wasRunning) await stopStack(p);
@@ -319,7 +387,7 @@ export function cmdConfig(rest: string[]): void {
   }
   if (rest[0] === "backup-dir") {
     if (rest.length !== 2) die("usage: supa config backup-dir <path>");
-    setConfigKey("backup_dir", rest[1].trim());
+    setConfigKey("backup_dir", absolutize(rest[1].trim()));
     return;
   }
   die(
@@ -352,8 +420,7 @@ export async function cmdLogs(rest: string[]): Promise<void> {
     console.log(`\nusage: supa logs ${p} <service> [-f]`);
     return;
   }
-  const match = containers.find((c) => svcOf(c) === svc) ??
-    containers.find((c) => c.includes(`_${svc}`));
+  const match = containers.find((c) => svcOf(c) === svc);
   if (!match) {
     die(`no service '${svc}' in '${p}' (have: ${containers.map(svcOf).sort().join(", ")})`);
   }
@@ -371,7 +438,8 @@ export async function cmdDestroy(rest: string[]): Promise<void> {
   const p = targets[0];
   const wd = cfgDir(p);
   if (!wd) die(`unresolvable project '${p}'`);
-  const lbl = labelOf(p) ?? p;
+  const lbl = labelOf(p);
+  if (!lbl) die(`cannot resolve project_id for '${p}'`);
   console.error(`⚠ destroy '${p}' — STOPS the stack and DELETES its local data`);
   console.error(`  (containers + volumes for docker label '${lbl}'). This cannot be undone.`);
   if (!yes) {
@@ -420,25 +488,55 @@ export async function cmdAdd(rest: string[]): Promise<void> {
   let slot: string | undefined;
   for (let i = 0; i < rest.length; i++) {
     if (rest[i] === "--init") init = true;
-    else if (rest[i] === "--slot") slot = rest[++i];
-    else pos.push(rest[i]);
+    else if (rest[i] === "--slot") {
+      slot = requireArg(rest, ++i, "usage: supa add <name> <path> [--init] [--slot 0-9]");
+    } else pos.push(rest[i]);
   }
   if (pos.length !== 2) die("usage: supa add <name> <path> [--init] [--slot 0-9]");
   if (slot !== undefined && !/^\d$/.test(slot)) die("--slot must be a single digit 0-9");
   const [name, path] = pos;
   if (!SAFE_NAME.test(name)) die(`invalid name '${name}' (use letters/digits/._-)`);
-  if (names().includes(name)) die(`'${name}' is already registered`);
+  // Create empty registry before names() — readRegistry dies if the file is missing.
+  ensureRegistry();
+  // Explicit entries only — park-discovered names may be overridden (explicit wins).
+  if (hasExplicitEntry(name)) die(`'${name}' is already registered`);
+  const overridesPark = names().includes(name);
   // Store absolute — a relative path would break `supa` from another cwd.
   const abs = absolutize(path);
   if (!isDir(abs)) console.error(`  warning: '${abs}' is not a directory (registering anyway)`);
+
+  // Resolve + assert the port slot BEFORE writing the registry / running init,
+  // so a clash or full band leaves no half-applied entry.
+  let chosen: string | undefined;
+  if (init) {
+    const foreign = await foreignSlots();
+    chosen = slot;
+    if (chosen === undefined) {
+      const s = nextFreeSlot(new Set(foreign.keys()), name);
+      if (s === null) {
+        die(
+          "no free port slot (0-9 all taken by projects or other containers) — " +
+            "pass --slot 0 or free a band first",
+        );
+      }
+      chosen = s;
+    }
+    assertSlotAvailable(name, chosen, foreign, { force: false, allowForce: false });
+  }
+
   const reg = registryPath();
   const prev = isFile(reg) ? readTextFile(reg) : "";
   const sep = prev.length && !prev.endsWith("\n") ? "\n" : "";
   Deno.writeTextFileSync(reg, `${prev}${sep}${name}|${abs}\n`);
   console.log(`supa: added ${name} -> ${abs}`);
+  if (overridesPark) {
+    console.log(`  (overrides park-discovered '${name}' — explicit entry wins)`);
+  }
 
   if (init) {
-    if (isFile(join(abs, "supabase", "config.toml"))) {
+    // Nested apps/*/examples/* configs count — don't scaffold a root that would
+    // shadow them (cfgDir prefers root once it exists).
+    if (cfgCandidates(abs).length > 0) {
       console.error(`  note: supabase/config.toml already exists — skipping 'supabase init'`);
     } else {
       console.log(`>> supabase init (${abs})`);
@@ -446,9 +544,8 @@ export async function cmdAdd(rest: string[]): Promise<void> {
       if (code === 127) die(SUPABASE_MISSING);
       if (code !== 0) die(`'supabase init' failed for '${name}' (exit ${code})`);
     }
-    const chosen = slot ?? nextFreeSlot(new Set((await foreignSlots()).keys())) ?? "";
     const f = cfgFile(name);
-    if (/^\d$/.test(chosen) && f && isFile(f)) {
+    if (chosen && f && isFile(f)) {
       const changes = rebandConfig(f, chosen);
       console.log(
         `  assigned slot ${chosen} — ${changes.length} port(s) re-banded (543${chosen}X)`,
@@ -471,13 +568,34 @@ export function cmdRm(rest: string[]): void {
   const name = rest[0];
   if (!names().includes(name)) die(`'${name}' is not in the registry`);
   const reg = registryPath();
-  const kept = readTextFile(reg).split(/\r?\n/).filter((line) => {
+  const lines = readTextFile(reg).split(/\r?\n/);
+  let hadExplicit = false;
+  const kept = lines.filter((line) => {
     const t = line.trim();
     if (t === "" || t.startsWith("#")) return true;
     const i = t.indexOf("|");
-    return i < 1 ? true : t.slice(0, i).trim() !== name;
+    if (i < 1) return true;
+    const n = t.slice(0, i).trim();
+    if (n === "*" || n !== name) return true;
+    hadExplicit = true;
+    return false;
   });
+  // Park discoveries live under `*|dir` — rm cannot drop them (use unpark).
+  if (!hadExplicit) {
+    die(
+      `'${name}' is park-discovered, not an explicit registry entry — ` +
+        `unpark the parent dir (supa unpark <dir>)`,
+    );
+  }
   Deno.writeTextFileSync(reg, kept.join("\n").replace(/\n+$/, "\n"));
+  // Dropping an explicit override can resurface the same name from a parked dir.
+  if (names().includes(name)) {
+    console.error(
+      `supa: removed the explicit '${name}' override — a parked dir still exposes it ` +
+        `(unpark the parent to drop it fully)`,
+    );
+    return;
+  }
   console.log(`supa: removed ${name} from the registry`);
 }
 // Opt-in auto-discovery: a parked dir's immediate subdirs that contain a
@@ -496,23 +614,37 @@ export function cmdPark(rest: string[]): void {
   if (rest.length !== 1) die("usage: supa park [<dir>]");
   const abs = absolutize(rest[0]);
   if (!isDir(abs)) die(`'${abs}' is not a directory`);
+  ensureRegistry();
   if (parkedDirs().includes(abs)) die(`'${abs}' is already parked`);
+  // Capture names already claimed (explicit + earlier parks) BEFORE writing, so
+  // we can warn about shadowed subdirs that readRegistry will silently skip.
+  const taken = new Set(names());
   const reg = registryPath();
   const prev = isFile(reg) ? readTextFile(reg) : "";
   const sep = prev.length && !prev.endsWith("\n") ? "\n" : "";
   Deno.writeTextFileSync(reg, `${prev}${sep}*|${abs}\n`);
   console.log(`supa: parked ${abs}`);
-  const found: string[] = [];
+  const discovered: string[] = [];
+  const shadowed: string[] = [];
   for (const s of Deno.readDirSync(abs)) {
     // Same filter as discovery in readRegistry — never announce a name it won't register.
     if (!s.isDirectory || !SAFE_NAME.test(s.name)) continue;
-    if (isFile(join(abs, s.name, "supabase", "config.toml"))) found.push(s.name);
+    if (!isFile(join(abs, s.name, "supabase", "config.toml"))) continue;
+    if (taken.has(s.name)) shadowed.push(s.name);
+    else discovered.push(s.name);
   }
-  console.log(
-    found.length
-      ? `  discovered: ${found.sort().join(", ")}`
-      : `  (no supabase projects in it yet — subdirs appear in 'supa ls' as you create them)`,
-  );
+  if (discovered.length) {
+    console.log(`  discovered: ${discovered.sort().join(", ")}`);
+  } else if (shadowed.length === 0) {
+    console.log(
+      `  (no supabase projects in it yet — subdirs appear in 'supa ls' as you create them)`,
+    );
+  }
+  if (shadowed.length) {
+    console.error(
+      `  shadowed (existing entry wins): ${shadowed.sort().join(", ")}`,
+    );
+  }
 }
 export function cmdUnpark(rest: string[]): void {
   if (rest.length !== 1) die("usage: supa unpark <dir>");
@@ -521,8 +653,12 @@ export function cmdUnpark(rest: string[]): void {
   const reg = registryPath();
   const kept = readTextFile(reg).split(/\r?\n/).filter((line) => {
     const t = line.trim();
-    if (!t.startsWith("*|")) return true;
-    return absolutize(t.slice(2).trim()) !== abs;
+    if (t === "" || t.startsWith("#")) return true;
+    const i = t.indexOf("|");
+    if (i < 1) return true;
+    // Same shape as parseRegistry — allow "* |/path" spacing.
+    if (t.slice(0, i).trim() !== "*") return true;
+    return absolutize(t.slice(i + 1).trim()) !== abs;
   });
   Deno.writeTextFileSync(reg, kept.join("\n").replace(/\n+$/, "\n"));
   console.log(`supa: unparked ${abs}  (its projects leave the registry; nothing is stopped)`);
@@ -542,32 +678,12 @@ export async function cmdPorts(rest: string[]): Promise<void> {
   const foreign = await foreignSlots();
   let slot = pos[1];
   if (slot === undefined) {
-    const s = nextFreeSlot(new Set(foreign.keys()));
+    const s = nextFreeSlot(new Set(foreign.keys()), name);
     if (s === null) die("no free port slot (0-9 all taken by projects or other containers)");
     slot = s;
   }
   if (!/^\d$/.test(slot)) die("slot must be a single digit 0-9");
-  // Refuse a slot already claimed by another registered project (their ports would
-  // collide) unless --force. Auto-picked slots are free by construction.
-  const clash = names().filter((n) => n !== name && slotOf(n) === slot);
-  if (clash.length && !force) {
-    die(
-      `slot ${slot} (543${slot}X) is already used by ${clash.join(", ")}.\n` +
-        `  omit the slot to auto-pick a free one, or pass --force to override anyway.`,
-    );
-  }
-  // Same for a band a container outside supa already publishes on — the stack
-  // simply won't bind while that container holds the port.
-  const held = foreign.get(slot);
-  if (held && !force) {
-    die(
-      `slot ${slot} (543${slot}X) is published by non-Supabase container(s): ${
-        held.join(", ")
-      }.\n` +
-        `  omit the slot to auto-pick a free band, or pass --force to take it anyway\n` +
-        `  (the stack won't start while they hold the port).`,
-    );
-  }
+  assertSlotAvailable(name, slot, foreign, { force, allowForce: true });
   const changes = rebandConfig(f, slot);
   if (changes.length === 0) {
     console.log(`no re-bandable 543XX ports found (or already on slot ${slot}) in ${f}`);
@@ -621,6 +737,18 @@ export async function cmdDoctor(): Promise<void> {
   for (const n of dropped) {
     console.log(`     ✗ ignored (name must match [A-Za-z0-9._-]): ${JSON.stringify(n)}`);
   }
+  // Relative roots still work (absolutized on read against cwd) but drift when
+  // you invoke supa elsewhere — flag them so they get rewritten absolute.
+  const relRoots = relativeRegistryEntries(readTextFile(reg));
+  console.log(
+    `  ${ok(relRoots.length === 0)} registry paths absolute` +
+      (relRoots.length ? `  (${relRoots.length} relative)` : ""),
+  );
+  for (const r of relRoots) {
+    console.log(
+      `     ! ${r.name}: relative path ${JSON.stringify(r.path)} — re-add or edit to absolute`,
+    );
+  }
   let allCfg = true;
   for (const p of projs) {
     if (!cfgDir(p.name)) {
@@ -629,6 +757,18 @@ export async function cmdDoctor(): Promise<void> {
     }
   }
   if (allCfg && projs.length) console.log(`  ✓ all config.toml resolve`);
+  // Multiple supabase/ trees under one registry root: cfgDir picks the first
+  // (root, else alphabetical apps/*, then examples/*) — warn so the wrong stack
+  // isn't bound silently.
+  for (const p of projs) {
+    const cands = cfgCandidates(p.root);
+    if (cands.length > 1) {
+      console.log(
+        `     ! ${p.name}: ${cands.length} config.toml candidates — using ${cands[0]}`,
+      );
+      for (const c of cands.slice(1)) console.log(`       also: ${c}`);
+    }
+  }
   const seen: Record<string, string> = {};
   let collision = false;
   for (const p of projs) {
@@ -896,14 +1036,23 @@ function psqlArgs(container: string, dbName: string, tx: boolean): string[] {
 export async function cmdBackup(rest: string[]): Promise<void> {
   const usage =
     "usage: supa backup <project> [--data-only|--schema-only|--roles-only] [--out <dir>] [--use-copy]";
+  const knownFlags = new Set([
+    "--data-only",
+    "--schema-only",
+    "--roles-only",
+    "--use-copy",
+  ]);
   const flags = new Set<string>();
   const pos: string[] = [];
   let out: string | undefined;
   for (let i = 0; i < rest.length; i++) {
     const a = rest[i];
-    if (a === "--out") out = rest[++i];
+    if (a === "--out") out = requireArg(rest, ++i, usage);
     else if (a.startsWith("-")) flags.add(a);
     else pos.push(a);
+  }
+  for (const f of flags) {
+    if (!knownFlags.has(f)) die(`unknown flag '${f}'\n${usage}`);
   }
   if (pos.length !== 1) die(usage);
   const p = pos[0];
@@ -948,14 +1097,18 @@ export async function cmdBackup(rest: string[]): Promise<void> {
 export async function cmdRestore(rest: string[]): Promise<void> {
   const usage =
     "usage: supa restore <project> (<file>[.gz] | --latest) [--yes] [--db <name>] [--no-tx]";
+  const knownFlags = new Set(["--latest", "--yes", "-y", "--no-tx"]);
   const flags = new Set<string>();
   const pos: string[] = [];
   let dbName = "postgres";
   for (let i = 0; i < rest.length; i++) {
     const a = rest[i];
-    if (a === "--db") dbName = rest[++i];
+    if (a === "--db") dbName = requireArg(rest, ++i, usage);
     else if (a.startsWith("-")) flags.add(a);
     else pos.push(a);
+  }
+  for (const f of flags) {
+    if (!knownFlags.has(f)) die(`unknown flag '${f}'\n${usage}`);
   }
   const yes = flags.has("--yes") || flags.has("-y");
   if (pos.length < 1) die(usage);
@@ -1049,15 +1202,20 @@ export async function cmdRestore(rest: string[]): Promise<void> {
   console.log(`✓ restored ${p} from ${file}`);
 }
 export async function cmdUpgrade(rest: string[]): Promise<void> {
-  const usage = "usage: supa pg-upgrade <project> --to <major_version> [--yes] [--dry-run]";
+  const usage =
+    "usage: supa pg-upgrade <project> --to <major_version> [--yes] [--dry-run] [--allow-downgrade]";
+  const knownFlags = new Set(["--yes", "-y", "--dry-run", "--allow-downgrade"]);
   const flags = new Set<string>();
   const pos: string[] = [];
   let to: string | undefined;
   for (let i = 0; i < rest.length; i++) {
     const a = rest[i];
-    if (a === "--to") to = rest[++i];
+    if (a === "--to") to = requireArg(rest, ++i, usage);
     else if (a.startsWith("-")) flags.add(a);
     else pos.push(a);
+  }
+  for (const f of flags) {
+    if (!knownFlags.has(f)) die(`unknown flag '${f}'\n${usage}`);
   }
   if (pos.length !== 1 || !to) die(usage);
   if (!/^\d+$/.test(to)) die(`--to must be a Postgres major version (got '${to}')`);
@@ -1160,7 +1318,15 @@ export async function cmdUpgrade(rest: string[]): Promise<void> {
 
   // 5. start fresh (new PG version; supabase applies migrations)
   console.log(`>> [5/6] starting ${p} on Postgres ${to}`);
-  await startStack(p); // dies on failure
+  const preStartHint = `  volume already dropped — recover:\n` +
+    `  recover config: mv ${f}.bak ${f}\n${recovery}\n` +
+    `  retry: docker volume rm ${volume} 2>/dev/null; supa up ${p}; supa restore ${p} ${payload}`;
+  // After a successful start, do NOT advise reverting major_version — the stack
+  // is already on Postgres $to; reload the snapshot instead.
+  const postStartHint =
+    `  volume already dropped — stack is on Postgres ${to} but empty.\n${recovery}\n` +
+    `  reload: supa restore ${p} ${payload}`;
+  await startStack(p, { failHint: preStartHint, failHintAfterStart: postStartHint });
 
   // 6. restore the data snapshot (project's schema prep via restore.pre)
   console.log(`>> [6/6] restoring data`);
@@ -1169,7 +1335,9 @@ export async function cmdUpgrade(rest: string[]): Promise<void> {
     die(`stack up but no db container found — reload manually: supa restore ${p} ${payload}`);
   }
   const hooks = readHooks(wd);
-  if (hooks.restorePre) await runHook("restore.pre", hooks.restorePre, wd);
+  if (hooks.restorePre) {
+    await runHook("restore.pre", hooks.restorePre, wd, { failHint: postStartHint });
+  }
   const code = await runStdinFile("docker", psqlArgs(container, "postgres", true), payload);
   if (code !== 0) {
     die(
@@ -1178,7 +1346,13 @@ export async function cmdUpgrade(rest: string[]): Promise<void> {
         `  (usually a restore.pre hook to build the schema first is what's missing.)`,
     );
   }
-  if (hooks.restorePost) await runHook("restore.post", hooks.restorePost, wd);
+  if (hooks.restorePost) {
+    await runHook("restore.post", hooks.restorePost, wd, {
+      failHint: `  data restore already succeeded — only restore.post failed.\n` +
+        `  snapshot kept: ${payload}\n` +
+        `  re-run the hook by hand, or ignore if it was optional.`,
+    });
+  }
   console.log(`✓ upgraded ${p} to Postgres ${to}  (snapshot kept: ${payload})`);
 }
 // `supa upgrade` — update supa ITSELF from GitHub Releases (checksum-verified).
@@ -1492,9 +1666,11 @@ backup-dir' > <project>/backups/. Atomic — interrupted dumps leave no file.`,
   restore: `supa restore <project> (<file>[.gz] | --latest) [--yes] [--db <name>] [--no-tx]
 Load a dump into the LIVE db (stack must be up) via the container's psql.
 .gz files are decompressed on the fly. Takes a safety pre-dump first; runs in
-a single transaction (errors roll back). --latest picks the newest backup
-(.sql or .sql.gz). A full dump needs a fresh schema — data-only into a migrated
-schema is the clean path (automate with restore.pre / restore.post hooks).`,
+a single transaction (errors roll back). --latest prefers the newest full dump
+(.sql or .sql.gz); falls back to a typed +data/+schema/+roles part only when
+no full dump exists; ignores pre-restore and upgrade snapshots (pass those by
+path). A full dump needs a fresh schema — data-only into a migrated schema is
+the clean path (automate with restore.pre / restore.post hooks).`,
   "pg-upgrade":
     `supa pg-upgrade <project> --to <major_version> [--yes] [--dry-run] [--allow-downgrade]
 Postgres MAJOR upgrade: data snapshot -> stop -> bump major_version ->

@@ -36,6 +36,9 @@ export function absolutize(p: string): string {
   if (expanded === "") return expanded;
   return isAbsolute(expanded) ? expanded : join(Deno.cwd(), expanded);
 }
+export function pathIsAbsolute(p: string): boolean {
+  return isAbsolute(p);
+}
 // Decode file bytes to text, honouring a UTF-16 BOM. Windows PowerShell 5.1's
 // `>` / Out-File write UTF-16LE by default, and decoding that as UTF-8 turns a
 // hand-made registry/config into NUL-riddled garbage that parses as nothing.
