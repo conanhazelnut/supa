@@ -1,5 +1,5 @@
 // Talking to the outside world: resolve the Supabase CLI, run docker/supabase
-// (never through a shell), and the start/stop/guard lifecycle.
+// (never through a shell), and the start/stop/max-active lifecycle.
 import { die, escapeRegExp, home, isFile, join, OS } from "./util.ts";
 import { cfgDir, labelOf, names, readHooks, readLimits, readMaxActive, rootOf } from "./config.ts";
 import { foreignSlotHolders } from "./parse.ts";
@@ -270,21 +270,9 @@ function printMaxActiveHelp(
   Deno.exit(1);
 }
 
-// Refuse to start `name` when that would exceed the max-active limit.
-export async function guard(name: string): Promise<void> {
-  const { value: max, source } = readMaxActive();
-  if (max === Infinity) return;
-  const target = labelOf(name);
-  const running = await runningLabels();
-  if (target && running.includes(target)) return; // already up — re-up is fine
-  const others = running.filter((l) => l !== target);
-  if (others.length < max) return;
-  printMaxActiveHelp(max, source, others, name);
-}
-
-// Preflight for `supa up a b …`: refuse the whole list when starting every
-// not-yet-running project would push past max-active. Avoids starting `a` then
-// dying on `b` and leaving a partial run.
+// Refuse to start the listed projects when that would exceed the max-active
+// limit. Skips names whose stacks are already up (re-up / restart is net-zero).
+// Used by `up` and `restart` so a batch never starts A then dies on B.
 export async function guardMany(toStart: string[]): Promise<void> {
   const { value: max, source } = readMaxActive();
   if (max === Infinity) return;

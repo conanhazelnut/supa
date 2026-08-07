@@ -183,7 +183,7 @@ change between versions).
   collide) unless you add `--force`.
 - **`backup`** dumps the **local** DB via `supabase db dump --local` (the stack
   must be **up**). Default is a **full** snapshot — roles + schema + data,
-  concatenated in restore order into one `<name>_<YYYY-MM-DD_HHMM>.sql`. Flags:
+  concatenated in restore order into one `<name>_<YYYY-MM-DD_HHMMSS>.sql`. Flags:
   `--data-only` / `--schema-only` / `--roles-only` (one part only; data files are
   named `<name>_data_…`), `--use-copy` (COPY instead of INSERTs, for large data),
   `--out <dir>` (this run only). Output dir resolves **`--out` → `backup_dir`
@@ -192,8 +192,8 @@ change between versions).
   dir** — dumps contain real data.
 - **`restore`** loads a dump into the stack's **live** DB (must be up) by piping it
   into the db container's `psql` — no host `psql` needed. Give it a file (`.sql`,
-  or `.sql.gz` — decompressed on the fly) or `--latest` (newest dump in the backup
-  dir, ignoring pre-restore snapshots).
+  or `.sql.gz` — decompressed on the fly) or `--latest` (newest `.sql` / `.sql.gz`
+  in the backup dir, ignoring pre-restore snapshots).
   Safety model, same spirit as `destroy`: it **type-name confirms** (`--yes` to
   skip), takes a **full safety pre-dump first** (`<name>_pre-restore_…`), and runs
   inside a **single transaction** — any error rolls the whole thing back, leaving
@@ -345,8 +345,10 @@ admin|~/code/admin
 - **name** — what you type (`supa up <name>`). Letters/digits/`._-` only —
   names reach shell tab-completion, so the charset is enforced even on
   hand-edited lines; anything else is ignored and `supa doctor` lists it.
-- **path** — the repo root. A leading `~` expands to home on every OS. Use
-  forward slashes even on Windows; absolute paths work too.
+- **path** — the repo root. A leading `~` expands to home on every OS. Relative
+  paths are resolved to absolute when you `supa add` / `supa park` (so the
+  registry survives a later invocation from another cwd). Use forward slashes
+  even on Windows; absolute paths work too.
 - **`*|dir` (parked)** — opt-in auto-discovery: every immediate subdir of `dir`
   containing a `supabase/config.toml` appears as a project named after the
   subdir. Subdirs without Supabase are ignored, so a mixed projects folder is

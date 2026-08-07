@@ -1,4 +1,4 @@
-#!/usr/bin/env -S deno run --allow-read --allow-write --allow-env --allow-run
+#!/usr/bin/env -S deno run --allow-read --allow-write --allow-env --allow-run --allow-net=api.github.com,github.com,objects.githubusercontent.com,release-assets.githubusercontent.com
 // Copyright 2026 conanhazelnut — SPDX-License-Identifier: Apache-2.0
 /**
  * supa — cross-platform manager for local Supabase stacks (one per project).

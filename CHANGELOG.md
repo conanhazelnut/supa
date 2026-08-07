@@ -4,6 +4,22 @@ All notable changes to supa are documented here. This project adheres to
 [Semantic Versioning](https://semver.org/) and
 [Keep a Changelog](https://keepachangelog.com/).
 
+## [Unreleased]
+
+### Fixed
+
+- `supa restart` preflights the whole name list against max-active (like `up`),
+  so a batch of stopped stacks cannot start the first and refuse the rest.
+- `supa add` / `supa park` store absolute paths in the registry, so a relative
+  path no longer breaks later invocations from another working directory.
+- `supa restore --latest` recognizes `.sql.gz` dumps (and second-precision
+  stamps), not only `.sql`.
+
+### Changed
+
+- Backup / pre-restore / upgrade snapshot filenames use `YYYY-MM-DD_HHMMSS`
+  (seconds) so two dumps in the same minute no longer collide.
+
 ## [0.1.3] — 2026-08-07
 
 Hardening for multi-project runs: refuse half-applied up/down lists, make

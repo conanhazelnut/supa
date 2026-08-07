@@ -3,6 +3,10 @@
 // exercised here (version/help/config/add/rm/ls) degrade gracefully without it.
 // Run: deno test -A
 
+import { fromFileUrl } from "@std/path";
+
+const MAIN = fromFileUrl(new URL("main.ts", import.meta.url));
+
 function ok(cond: boolean, msg = "expected true"): void {
   if (!cond) throw new Error(msg);
 }
@@ -10,6 +14,7 @@ function ok(cond: boolean, msg = "expected true"): void {
 async function runSupa(
   args: string[],
   home: string,
+  opts: { cwd?: string } = {},
 ): Promise<{ code: number; out: string; err: string }> {
   // clearEnv so NO inherited SUPA_* (max-active, allow-multi, ram-budget, …) from
   // the developer's shell can leak in; keep only PATH (for the child's own
@@ -27,9 +32,10 @@ async function runSupa(
     }
   }
   const { code, stdout, stderr } = await new Deno.Command(Deno.execPath(), {
-    args: ["run", "--no-check", "-A", "main.ts", ...args],
+    args: ["run", "--no-check", "-A", MAIN, ...args],
     clearEnv: true,
     env,
+    cwd: opts.cwd,
     stdout: "piped",
     stderr: "piped",
   }).output();
@@ -408,6 +414,53 @@ Deno.test("up refuses a batch that would exceed max-active before starting any",
     } finally {
       await Deno.remove(a, { recursive: true });
       await Deno.remove(b, { recursive: true });
+    }
+  });
+});
+
+Deno.test("restart refuses a batch that would exceed max-active before mutating any", async () => {
+  await withHome(async (home) => {
+    const a = await Deno.makeTempDir({ prefix: "supa-a-" });
+    const b = await Deno.makeTempDir({ prefix: "supa-b-" });
+    try {
+      for (const [dir, id, api] of [[a, "aaa", 54331], [b, "bbb", 54351]] as const) {
+        await Deno.mkdir(`${dir}/supabase`, { recursive: true });
+        await Deno.writeTextFile(
+          `${dir}/supabase/config.toml`,
+          `project_id = "${id}"\n[api]\nport = ${api}\n[db]\nport = ${api + 1}\n`,
+        );
+      }
+      await Deno.writeTextFile(`${home}/supa.registry`, `aaa|${a}\nbbb|${b}\n`);
+      await Deno.writeTextFile(`${home}/supa.config`, "max_active = 1\n");
+      const r = await runSupa(["restart", "aaa", "bbb"], home);
+      ok(r.code === 1, `expected exit 1, got ${r.code}`);
+      ok(/max-active limit reached/.test(r.err), r.err);
+      ok(!/starting aaa/.test(r.out) && !/starting bbb/.test(r.out), r.out);
+    } finally {
+      await Deno.remove(a, { recursive: true });
+      await Deno.remove(b, { recursive: true });
+    }
+  });
+});
+
+Deno.test("add stores a relative path as absolute in the registry", async () => {
+  await withHome(async (home) => {
+    const proj = await Deno.makeTempDir({ prefix: "supa-rel-" });
+    const parent = proj.replace(/[/\\][^/\\]+$/, "");
+    const base = proj.replace(/^.*[/\\]/, "");
+    try {
+      await Deno.writeTextFile(`${home}/supa.registry`, "");
+      const add = await runSupa(["add", "relapp", base], home, { cwd: parent });
+      ok(add.code === 0, add.err);
+      const reg = await Deno.readTextFile(`${home}/supa.registry`);
+      const line = reg.split(/\r?\n/).find((l) => l.startsWith("relapp|"));
+      ok(!!line, reg);
+      const stored = line!.slice("relapp|".length);
+      ok(stored.includes(base), stored);
+      ok(stored !== base, `must not stay relative: ${stored}`);
+      ok(!stored.startsWith("."), stored);
+    } finally {
+      await Deno.remove(proj, { recursive: true });
     }
   });
 });

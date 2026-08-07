@@ -8,7 +8,8 @@
 #          apps/<x>/, or examples/<x>/) and reads its label + ports live.
 #
 # Paths: leading ~ = home dir; forward slashes on Windows (C:/code/web);
-# absolute paths work. Blank lines and #-comments ignored.
+# absolute paths work. `supa add` / `supa park` store paths absolute.
+# Blank lines and #-comments ignored.
 # Relocate via SUPA_REGISTRY (file) or SUPA_HOME (dir).
 
 web|~/code/web

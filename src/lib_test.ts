@@ -2,6 +2,7 @@
 // inline assert is all the harness this needs.  Run: deno test
 import { SEPARATOR as SEP } from "@std/path";
 import {
+  absolutize,
   decodeText,
   escapeRegExp,
   expandTilde,
@@ -69,6 +70,13 @@ Deno.test("expandTilde", () => {
   eq(expandTilde("relative"), "relative");
   eq(expandTilde("~/x"), join(home(), "x"));
   eq(expandTilde("~"), home());
+});
+Deno.test("absolutize expands ~ and resolves relative against cwd", () => {
+  eq(absolutize("/abs/path"), "/abs/path");
+  eq(absolutize("~/x"), join(home(), "x"));
+  const rel = absolutize("rel-only");
+  ok(rel.endsWith(`${SEP}rel-only`), `got ${rel}`);
+  ok(rel !== "rel-only", "must not stay relative");
 });
 
 // ---------- text decoding (BOM sniffing) --------------------------------------
@@ -351,15 +359,15 @@ Deno.test("signingKeyArray throws on garbage", () => {
 });
 
 // ---------- backup: filename + dir resolution ---------------------------------
-Deno.test("tsStamp formats local time as YYYY-MM-DD_HHMM", () => {
-  eq(tsStamp(new Date(2026, 6, 14, 1, 30)), "2026-07-14_0130"); // month is 0-based
-  eq(tsStamp(new Date(2026, 11, 3, 9, 5)), "2026-12-03_0905"); // zero-padding
+Deno.test("tsStamp formats local time as YYYY-MM-DD_HHMMSS", () => {
+  eq(tsStamp(new Date(2026, 6, 14, 1, 30, 7)), "2026-07-14_013007"); // month is 0-based
+  eq(tsStamp(new Date(2026, 11, 3, 9, 5, 0)), "2026-12-03_090500"); // zero-padding
 });
 Deno.test("backupFileName: full has no type suffix, parts do", () => {
-  eq(backupFileName("larp", "full", "2026-07-14_0130"), "larp_2026-07-14_0130.sql");
-  eq(backupFileName("larp", "data", "2026-07-14_0130"), "larp_data_2026-07-14_0130.sql");
-  eq(backupFileName("pams", "schema", "2026-07-14_0130"), "pams_schema_2026-07-14_0130.sql");
-  eq(backupFileName("pams", "roles", "2026-07-14_0130"), "pams_roles_2026-07-14_0130.sql");
+  eq(backupFileName("larp", "full", "2026-07-14_013007"), "larp_2026-07-14_013007.sql");
+  eq(backupFileName("larp", "data", "2026-07-14_013007"), "larp_data_2026-07-14_013007.sql");
+  eq(backupFileName("pams", "schema", "2026-07-14_013007"), "pams_schema_2026-07-14_013007.sql");
+  eq(backupFileName("pams", "roles", "2026-07-14_013007"), "pams_roles_2026-07-14_013007.sql");
 });
 Deno.test("resolveBackupDir precedence: out > configured > project/backups", () => {
   eq(resolveBackupDir({ out: "/x", configured: "/y", projectRoot: "/z" }), "/x");
@@ -381,7 +389,7 @@ Deno.test("resolveBackupDir throws when nothing resolves", () => {
 Deno.test("latestBackup picks the newest and ignores pre-restore + other projects", () => {
   const files = [
     "larp_2026-07-10_0900.sql",
-    "larp_2026-07-14_1200.sql", // newest for larp
+    "larp_2026-07-14_1200.sql", // newest for larp (minute-precision, legacy)
     "larp_data_2026-07-12_0800.sql",
     "larp_pre-restore_2026-07-20_0000.sql", // must be ignored
     "pams_2026-07-19_0000.sql", // different project
@@ -390,6 +398,14 @@ Deno.test("latestBackup picks the newest and ignores pre-restore + other project
   eq(latestBackup(files, "larp"), "larp_2026-07-14_1200.sql");
   eq(latestBackup(files, "pams"), "pams_2026-07-19_0000.sql");
   eq(latestBackup(files, "nope"), null);
+});
+Deno.test("latestBackup prefers .sql.gz when it is newer, and accepts second-precision stamps", () => {
+  const files = [
+    "larp_2026-07-14_120000.sql",
+    "larp_2026-07-14_120001.sql.gz", // newer + gzipped
+    "larp_pre-restore_2026-07-14_120002.sql.gz",
+  ];
+  eq(latestBackup(files, "larp"), "larp_2026-07-14_120001.sql.gz");
 });
 Deno.test("latestBackup returns null when only a pre-restore dump exists", () => {
   eq(latestBackup(["larp_pre-restore_2026-07-20_0000.sql"], "larp"), null);

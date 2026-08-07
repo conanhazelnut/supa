@@ -251,12 +251,12 @@ export function shaFor(sums: string, asset: string): string | null {
 // A full backup is roles+schema+data; the others dump a single part.
 export type BackupType = "full" | "data" | "schema" | "roles";
 
-// Local-time stamp `YYYY-MM-DD_HHMM` for backup filenames (sorts chronologically).
+// Local-time stamp `YYYY-MM-DD_HHMMSS` for backup filenames (sorts chronologically).
 export function tsStamp(d: Date): string {
   const p = (n: number) => String(n).padStart(2, "0");
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}_${p(d.getHours())}${
     p(d.getMinutes())
-  }`;
+  }${p(d.getSeconds())}`;
 }
 
 // `<name>_<stamp>.sql` for full, `<name>_<type>_<stamp>.sql` for a single part.
@@ -277,15 +277,17 @@ export function resolveBackupDir(
 }
 
 // Newest backup for `name` from a list of filenames. Sorts by the trailing
-// `YYYY-MM-DD_HHMM` stamp (NOT the whole filename — a `_data_` type suffix would
+// `YYYY-MM-DD_HHMM[SS]` stamp (NOT the whole filename — a `_data_` type suffix would
 // otherwise sort a data dump after a same-day full one), and excludes safety
 // pre-restore dumps so `--latest` never picks the snapshot a restore just took.
+// Accepts `.sql` and `.sql.gz` (restore decompresses gzip on the fly).
 export function latestBackup(files: string[], name: string): string | null {
-  const stampOf = (f: string): string => f.match(/(\d{4}-\d{2}-\d{2}_\d{4})\.sql$/)?.[1] ?? "";
+  const stampOf = (f: string): string =>
+    f.match(/(\d{4}-\d{2}-\d{2}_\d{4}(?:\d{2})?)\.sql(?:\.gz)?$/)?.[1] ?? "";
   const mine = files
     .filter((f) =>
-      f.startsWith(`${name}_`) && f.endsWith(".sql") && !f.includes("_pre-restore_") &&
-      stampOf(f) !== ""
+      f.startsWith(`${name}_`) && (f.endsWith(".sql") || f.endsWith(".sql.gz")) &&
+      !f.includes("_pre-restore_") && stampOf(f) !== ""
     )
     .sort((a, b) => (stampOf(a) < stampOf(b) ? -1 : stampOf(a) > stampOf(b) ? 1 : 0));
   return mine.length ? mine[mine.length - 1] : null;

@@ -1,6 +1,7 @@
 // The command handlers. Each maps `supa <verb> …` to Supabase-CLI + docker calls,
 // deriving everything from the registry and each project's config.toml.
 import {
+  absolutize,
   die,
   DOCS_URL,
   escapeRegExp,
@@ -66,7 +67,6 @@ import {
   applyLimits,
   dbContainer,
   foreignSlots,
-  guard,
   guardMany,
   nameForLabel,
   runCapture,
@@ -133,12 +133,15 @@ export async function cmdSwitch(rest: string[]): Promise<void> {
 export async function cmdRestart(rest: string[]): Promise<void> {
   if (rest.length < 1) die("usage: supa restart <project...>");
   for (const p of rest) requireProject(p);
+  // Same preflight as up: starting every currently-down name in this list must
+  // fit under max-active (already-up ones are net-zero). Refuse the whole batch
+  // before stopping/starting anyone.
+  await guardMany(rest);
   const running = await runningLabels();
   for (const p of rest) {
     const lbl = labelOf(p);
     const wasRunning = !!lbl && running.includes(lbl);
     if (wasRunning) await stopStack(p);
-    else await guard(p); // restarting a running stack is net-zero; starting a stopped one counts
     await startStack(p);
   }
 }
@@ -425,13 +428,14 @@ export async function cmdAdd(rest: string[]): Promise<void> {
   const [name, path] = pos;
   if (!SAFE_NAME.test(name)) die(`invalid name '${name}' (use letters/digits/._-)`);
   if (names().includes(name)) die(`'${name}' is already registered`);
-  const abs = expandTilde(path);
+  // Store absolute — a relative path would break `supa` from another cwd.
+  const abs = absolutize(path);
   if (!isDir(abs)) console.error(`  warning: '${abs}' is not a directory (registering anyway)`);
   const reg = registryPath();
   const prev = isFile(reg) ? readTextFile(reg) : "";
   const sep = prev.length && !prev.endsWith("\n") ? "\n" : "";
-  Deno.writeTextFileSync(reg, `${prev}${sep}${name}|${path}\n`);
-  console.log(`supa: added ${name} -> ${path}`);
+  Deno.writeTextFileSync(reg, `${prev}${sep}${name}|${abs}\n`);
+  console.log(`supa: added ${name} -> ${abs}`);
 
   if (init) {
     if (isFile(join(abs, "supabase", "config.toml"))) {
@@ -490,7 +494,7 @@ export function cmdPark(rest: string[]): void {
     return;
   }
   if (rest.length !== 1) die("usage: supa park [<dir>]");
-  const abs = expandTilde(rest[0]);
+  const abs = absolutize(rest[0]);
   if (!isDir(abs)) die(`'${abs}' is not a directory`);
   if (parkedDirs().includes(abs)) die(`'${abs}' is already parked`);
   const reg = registryPath();
@@ -512,13 +516,13 @@ export function cmdPark(rest: string[]): void {
 }
 export function cmdUnpark(rest: string[]): void {
   if (rest.length !== 1) die("usage: supa unpark <dir>");
-  const abs = expandTilde(rest[0]);
+  const abs = absolutize(rest[0]);
   if (!parkedDirs().includes(abs)) die(`'${abs}' is not parked ('supa park' lists parked dirs)`);
   const reg = registryPath();
   const kept = readTextFile(reg).split(/\r?\n/).filter((line) => {
     const t = line.trim();
     if (!t.startsWith("*|")) return true;
-    return expandTilde(t.slice(2).trim()) !== abs;
+    return absolutize(t.slice(2).trim()) !== abs;
   });
   Deno.writeTextFileSync(reg, kept.join("\n").replace(/\n+$/, "\n"));
   console.log(`supa: unparked ${abs}  (its projects leave the registry; nothing is stopped)`);
@@ -1482,19 +1486,22 @@ Generate a NEW JWT signing key, write signing_keys.json, set
 signing_keys_path in config.toml, restart. Existing tokens become invalid.
 Gitignore signing_keys.json — it holds the private key.`,
   backup: `supa backup <project> [--data-only|--schema-only|--roles-only] [--use-copy] [--out <dir>]
-Dump the local DB (stack must be up) to <name>_<YYYY-MM-DD_HHMM>.sql.
+Dump the local DB (stack must be up) to <name>_<YYYY-MM-DD_HHMMSS>.sql.
 Default: full (roles+schema+data). Output dir: --out > 'supa config
 backup-dir' > <project>/backups/. Atomic — interrupted dumps leave no file.`,
   restore: `supa restore <project> (<file>[.gz] | --latest) [--yes] [--db <name>] [--no-tx]
 Load a dump into the LIVE db (stack must be up) via the container's psql.
 .gz files are decompressed on the fly. Takes a safety pre-dump first; runs in
-a single transaction (errors roll back). --latest picks the newest backup.
-A full dump needs a fresh schema — data-only into a migrated schema is the
-clean path (automate with restore.pre / restore.post hooks).`,
-  "pg-upgrade": `supa pg-upgrade <project> --to <major_version> [--yes] [--dry-run]
+a single transaction (errors roll back). --latest picks the newest backup
+(.sql or .sql.gz). A full dump needs a fresh schema — data-only into a migrated
+schema is the clean path (automate with restore.pre / restore.post hooks).`,
+  "pg-upgrade":
+    `supa pg-upgrade <project> --to <major_version> [--yes] [--dry-run] [--allow-downgrade]
 Postgres MAJOR upgrade: data snapshot -> stop -> bump major_version ->
 drop the DB volume -> start fresh -> restore. Destructive (typed confirm).
-No downgrades (roll back via the snapshot instead); --dry-run previews.`,
+Downgrades are refused by default (Postgres does not support them — roll back
+via the pre-upgrade snapshot instead); --allow-downgrade overrides. --dry-run
+previews.`,
   upgrade: `supa upgrade [--check]
 Update supa ITSELF from GitHub Releases (checksum-verified, atomic swap).
 --check only reports the latest version. supa never phones home on its own —
@@ -1505,16 +1512,18 @@ Print the stack's keys/URLs, or --write: merge them into a dotenv file
 (default <config-dir>/.env.local) — updates keys in place, keeps other
 lines. Add a supa.env.map next to config.toml to rename keys for your app.`,
   add: `supa add <name> <path> [--init] [--slot 0-9]
-Register a project. --init also runs 'supabase init' and assigns a free
-543XX port band. For a directory of projects, see: supa help park`,
+Register a project (path is stored absolute). --init also runs 'supabase init'
+and assigns a free 543XX port band. For a directory of projects, see: supa help park`,
   park: `supa park [<dir>] · supa unpark <dir>
 Opt-in auto-discovery: parking a dir makes every immediate subdir that
 contains supabase/config.toml appear as a project (named after the subdir).
 Subdirs without Supabase are ignored; explicit 'supa add' entries win.
 'supa park' alone lists parked dirs. Stored as a '*|<dir>' registry line.`,
-  ports: `supa ports <name> [slot 0-9]
+  ports: `supa ports <name> [slot 0-9] [--force]
 Re-band the project's 543XX ports to a new slot (4th digit), keeping the
-service digit. Writes config.toml.bak first. Apply with: supa restart`,
+service digit. Writes config.toml.bak first. Refuses a slot already used by
+another project or held by a foreign container unless --force. Apply with:
+supa restart`,
   logs: `supa logs <project> [service] [-f]
 Tail one service's container logs (200 lines; -f follows). Without a
 service, lists the stack's services.`,

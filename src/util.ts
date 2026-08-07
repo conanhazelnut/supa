@@ -3,7 +3,7 @@
 // forward-slash join worked, but printed mixed separators in every message on
 // Windows and broke UNC paths by collapsing the leading "\\").
 
-import { dirname, join as stdJoin } from "@std/path";
+import { dirname, isAbsolute, join as stdJoin } from "@std/path";
 
 export const OS = Deno.build.os; // "darwin" | "linux" | "windows"
 
@@ -28,6 +28,13 @@ export function expandTilde(p: string): string {
   if (p === "~") return home();
   if (p.startsWith("~/") || p.startsWith("~\\")) return join(home(), p.slice(2));
   return p;
+}
+// Expand ~ then make absolute against cwd. Registry entries must survive a later
+// `supa` invocation from a different working directory.
+export function absolutize(p: string): string {
+  const expanded = expandTilde(p);
+  if (expanded === "") return expanded;
+  return isAbsolute(expanded) ? expanded : join(Deno.cwd(), expanded);
 }
 // Decode file bytes to text, honouring a UTF-16 BOM. Windows PowerShell 5.1's
 // `>` / Out-File write UTF-16LE by default, and decoding that as UTF-8 turns a
