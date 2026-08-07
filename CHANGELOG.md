@@ -6,6 +6,11 @@ All notable changes to supa are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [0.1.5] — 2026-08-08
+
+Review-loop correctness: soft-fail `down.post`, start-first `switch`, keep
+hand-set slot `0`, and close rotate/park/config/docs edges.
+
 ### Fixed
 
 - A failing `down.post` hook warns instead of exiting non-zero after the stack
@@ -262,6 +267,7 @@ Supabase stacks (one per project) on top of the official Supabase CLI.
   with checksum verification and a signed build-provenance attestation. Unit +
   CLI integration tests; CI runs fmt / lint / check / test on Linux and Windows.
 
+[0.1.5]: https://github.com/conanhazelnut/supa/releases/tag/v0.1.5
 [0.1.4]: https://github.com/conanhazelnut/supa/releases/tag/v0.1.4
 [0.1.3]: https://github.com/conanhazelnut/supa/releases/tag/v0.1.3
 [0.1.2]: https://github.com/conanhazelnut/supa/releases/tag/v0.1.2
