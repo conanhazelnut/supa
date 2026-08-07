@@ -2,7 +2,7 @@ name: ci
 
 # Runs the same checks as the local pre-push hook (`.githooks/pre-push`,
 # activate with `deno task hooks`) — the hook catches problems before a push,
-# CI proves them on a clean machine and on both OSes.
+# CI proves them on a clean machine and on each OS we ship for.
 on:
   push:
     branches: [main]
@@ -14,12 +14,12 @@ permissions:
 
 jobs:
   check:
-    # Both OSes: supa ships a Windows binary, so path handling, spawning, and the
-    # test suite must be proven on Windows too — not just assumed from Linux.
+    # All three ship targets: path handling, spawning, and the test suite must
+    # be proven on each OS — not assumed from Linux alone.
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: [ubuntu-latest, windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
