@@ -67,6 +67,7 @@ import {
   dbContainer,
   foreignSlots,
   guard,
+  guardMany,
   nameForLabel,
   runCapture,
   runHook,
@@ -97,17 +98,20 @@ async function readLine(prompt: string): Promise<string> {
 
 export async function cmdUp(rest: string[]): Promise<void> {
   if (rest.length < 1) die("usage: supa up <project...>");
-  for (const p of rest) {
-    if (rootOf(p) === null) die(`unknown project '${p}' (known: ${names().join(" ")})`);
-  }
-  for (const p of rest) {
-    await guard(p);
-    await startStack(p);
-  }
+  // Validate every name + the max-active budget BEFORE starting anyone, so a
+  // later failure can't leave earlier stacks up under a broken partial run.
+  for (const p of rest) requireProject(p);
+  await guardMany(rest);
+  for (const p of rest) await startStack(p);
 }
 export async function cmdDown(rest: string[]): Promise<void> {
   if (rest.length < 1) die("usage: supa down <project...> | supa down --all");
   const list = rest[0] === "--all" ? names() : rest;
+  // Same preflight as up: refuse the whole list if any name is unknown, so we
+  // never stop A then die on B and leave the registry half-acted-on.
+  if (rest[0] !== "--all") {
+    for (const p of list) requireProject(p);
+  }
   for (const p of list) await stopStack(p);
 }
 export async function cmdSwitch(rest: string[]): Promise<void> {
