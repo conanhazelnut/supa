@@ -170,7 +170,8 @@ change between versions).
   `<config-dir>/.env.local`): updates existing keys in place, keeps other lines,
   appends new ones, masks secrets in the console. By default it writes Supabase's
   **native** names (`API_URL`, `ANON_KEY`, `SERVICE_ROLE_KEY`, `DB_URL`, …).
-  To rename them for your app, drop a **`supa.env.map`** next to `config.toml`:
+  To rename them for your app, drop a **`supa.env.map`** in the project workdir
+  (beside `supabase/`):
   ```
   # APP_NAME = NATIVE_NAME   (one native may feed several app names)
   SUPABASE_URL              = API_URL
@@ -243,7 +244,8 @@ change between versions).
 
 ### Per-project hooks (`supa.hooks`)
 
-Drop a `supa.hooks` next to `config.toml` (in the same dir as `supa.env.map`) to let
+Drop a `supa.hooks` in the project workdir — beside the `supabase/` directory
+(same place as `supa.env.map` / `supa.limits`) — to let
 a project declare its own lifecycle steps — supa owns the flow, the project owns the
 specifics:
 
@@ -260,13 +262,16 @@ down.post = echo stopped.
 ```
 
 Hooks are the one place supa runs a shell command (they're your commands, like a
-Makefile target). A failing hook aborts the operation.
+Makefile target). A failing **pre**-hook (`up.pre` / `down.pre` / `restore.*`)
+aborts the operation. A failing **post**-hook (`up.post` / `down.post`) only
+warns — the start/stop already succeeded, so aborting would look like a failed
+lifecycle step and could leave a `down --all` / `switch` batch half-done.
 
 ### Resource limits (`supa.limits`) — capping RAM/CPU per stack
 
 By default a Supabase container has **no memory limit** — it can balloon up to the
 whole Docker VM (and past your physical RAM into swap). On a RAM-bound host, drop a
-`supa.limits` next to `config.toml` to cap each container. supa applies it via
+`supa.limits` in the project workdir (beside `supabase/`) to cap each container. supa applies it via
 `docker update` right after `supa up` (and `supa limit <p>` re-applies to a running
 stack). See [`examples/supa.limits.example`](../examples/supa.limits.example):
 

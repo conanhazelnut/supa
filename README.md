@@ -92,8 +92,9 @@ Run `supa help` for the full list.
 `ls` / `status` / `config` take `--json` for scripting; `supa help <command>`
 gives per-command details; `supa completion bash|zsh|pwsh` sets up tab-completion.
 
-Destructive commands — `destroy` (deletes a stack's data) and `rotate`
-(invalidates existing tokens) — require typing the project name to confirm.
+Destructive commands — `destroy` (deletes a stack's data), `rotate` (invalidates
+existing tokens), `restore`, and `pg-upgrade` — require typing the project name
+to confirm.
 
 ## How it works
 

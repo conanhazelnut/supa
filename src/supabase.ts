@@ -203,8 +203,9 @@ export async function applyLimits(name: string): Promise<number> {
 // Run a project-declared hook. Hooks are the ONE place supa uses a shell — the
 // command is user-authored config (like a Makefile target), run in the project
 // dir, so this is a deliberate, trusted exception to the no-shell rule.
-// `soft: true` warns on failure instead of dying — used for up.post so a failed
-// post-hook cannot look like a failed start after the stack is already up.
+// `soft: true` warns on failure instead of dying — used for up.post / down.post
+// so a failed post-hook cannot look like a failed start/stop after the stack
+// mutation already succeeded (and cannot abort a batch / switch mid-list).
 export async function runHook(
   kind: string,
   cmd: string,
@@ -279,7 +280,8 @@ export async function stopStack(name: string): Promise<void> {
   const code = await runInherit(supabaseCmd(), ["--workdir", wd, "stop"]);
   if (code === 127) die(SUPABASE_MISSING);
   if (code !== 0) die(`supabase stop failed for '${name}' (exit ${code})`);
-  if (isUp && hooks.downPost) await runHook("down.post", hooks.downPost, wd);
+  // Soft-fail: stop already succeeded — same rationale as up.post.
+  if (isUp && hooks.downPost) await runHook("down.post", hooks.downPost, wd, { soft: true });
 }
 
 function printMaxActiveHelp(

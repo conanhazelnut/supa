@@ -616,6 +616,36 @@ Deno.test("ports auto-pick keeps the project's own free slot", async () => {
   });
 });
 
+// Hand-set slot 0 must stay on auto-pick when free (auto-assignment still 1–9).
+Deno.test("ports auto-pick keeps hand-set slot 0", async () => {
+  await withHome(async (home) => {
+    const dirs: string[] = [];
+    try {
+      const lines: string[] = [];
+      for (let d = 0; d <= 8; d++) {
+        const dir = await Deno.makeTempDir({ prefix: `supa-s${d}-` });
+        dirs.push(dir);
+        await Deno.mkdir(`${dir}/supabase`, { recursive: true });
+        const api = 54300 + d * 10 + 1; // 54301, 54311, …
+        await Deno.writeTextFile(
+          `${dir}/supabase/config.toml`,
+          `project_id = "p${d}"\n[api]\nport = ${api}\n[db]\nport = ${api + 1}\n`,
+        );
+        lines.push(`p${d}|${dir}`);
+      }
+      await Deno.writeTextFile(`${home}/supa.registry`, lines.join("\n") + "\n");
+      const r = await runSupa(["ports", "p0"], home);
+      ok(r.code === 0, r.err);
+      ok(
+        (await Deno.readTextFile(`${dirs[0]}/supabase/config.toml`)).includes("54301"),
+        "p0 must keep slot 0",
+      );
+    } finally {
+      for (const d of dirs) await Deno.remove(d, { recursive: true });
+    }
+  });
+});
+
 Deno.test("add --init refuses a colliding --slot like ports", async () => {
   await withHome(async (home) => {
     const a = await Deno.makeTempDir({ prefix: "supa-a-" });
@@ -1068,7 +1098,7 @@ Deno.test("down skips hooks when the stack is not running", async () => {
       );
       const marker = `${proj}/hook-fired`;
       await Deno.writeTextFile(
-        `${proj}/supabase/supa.hooks`,
+        `${proj}/supa.hooks`,
         `down.pre = touch ${marker}\n`,
       );
       await Deno.writeTextFile(`${home}/supa.registry`, `hooky|${proj}\n`);
@@ -1083,6 +1113,184 @@ Deno.test("down skips hooks when the stack is not running", async () => {
       ok(
         !(await Deno.stat(marker).then(() => true).catch(() => false)),
         "down.pre must not fire when the stack is not UP",
+      );
+    } finally {
+      await Deno.remove(proj, { recursive: true });
+      await Deno.remove(shim, { recursive: true });
+    }
+  });
+});
+
+// TEETH: a failing down.post used to die after stop and abort --all mid-list.
+Deno.test("down --all soft-fails down.post and continues the batch", async () => {
+  await withHome(async (home) => {
+    const a = await Deno.makeTempDir({ prefix: "supa-a-" });
+    const b = await Deno.makeTempDir({ prefix: "supa-b-" });
+    const shim = await Deno.makeTempDir({ prefix: "supa-shim-" });
+    try {
+      for (const [dir, id, api] of [[a, "aaa", 54331], [b, "bbb", 54351]] as const) {
+        await Deno.mkdir(`${dir}/supabase`, { recursive: true });
+        await Deno.writeTextFile(
+          `${dir}/supabase/config.toml`,
+          `project_id = "${id}"\n[api]\nport = ${api}\n`,
+        );
+      }
+      await Deno.writeTextFile(
+        `${a}/supa.hooks`,
+        Deno.build.os === "windows" ? "down.post = exit /b 1\n" : "down.post = exit 1\n",
+      );
+      await Deno.writeTextFile(`${home}/supa.registry`, `aaa|${a}\nbbb|${b}\n`);
+      const stopLog = `${shim}/stops.log`;
+      const sbPath = Deno.build.os === "windows" ? `${shim}/supabase.cmd` : `${shim}/supabase`;
+      const dkPath = Deno.build.os === "windows" ? `${shim}/docker.cmd` : `${shim}/docker`;
+      await Deno.writeTextFile(
+        sbPath,
+        Deno.build.os === "windows"
+          ? `@echo off\r\necho %*>> "${stopLog}"\r\nexit /b 0\r\n`
+          : `#!/bin/sh\nprintf '%s\\n' "$*" >> "${stopLog}"\nexit 0\n`,
+      );
+      // Report both stacks UP so down.post actually runs.
+      await Deno.writeTextFile(
+        dkPath,
+        Deno.build.os === "windows"
+          ? `@echo off\r\necho aaa\r\necho bbb\r\nexit /b 0\r\n`
+          : `#!/bin/sh\nprintf 'aaa\\nbbb\\n'\nexit 0\n`,
+      );
+      if (Deno.build.os !== "windows") {
+        await Deno.chmod(sbPath, 0o755);
+        await Deno.chmod(dkPath, 0o755);
+      }
+      const r = await runSupa(["down", "--all"], home, { pathPrefix: shim });
+      ok(r.code === 0, `expected exit 0, got ${r.code}: ${r.err}`);
+      ok(/down\.post hook failed/.test(r.err), r.err);
+      ok(/warning:/.test(r.err), r.err);
+      const stops = await Deno.readTextFile(stopLog);
+      ok(/stop/.test(stops), stops);
+      // Both projects must have been stopped despite aaa's failing post-hook.
+      const stopCount = stops.split(/\r?\n/).filter((l) => /\bstop\b/.test(l)).length;
+      ok(stopCount >= 2, `expected >=2 stops, got ${stopCount}: ${stops}`);
+    } finally {
+      await Deno.remove(a, { recursive: true });
+      await Deno.remove(b, { recursive: true });
+      await Deno.remove(shim, { recursive: true });
+    }
+  });
+});
+
+// TEETH: switch used to stop others first — a failed start left every stack down.
+Deno.test("switch does not stop others when target start fails", async () => {
+  await withHome(async (home) => {
+    const a = await Deno.makeTempDir({ prefix: "supa-a-" });
+    const b = await Deno.makeTempDir({ prefix: "supa-b-" });
+    const shim = await Deno.makeTempDir({ prefix: "supa-shim-" });
+    try {
+      for (const [dir, id, api] of [[a, "aaa", 54331], [b, "bbb", 54351]] as const) {
+        await Deno.mkdir(`${dir}/supabase`, { recursive: true });
+        await Deno.writeTextFile(
+          `${dir}/supabase/config.toml`,
+          `project_id = "${id}"\n[api]\nport = ${api}\n`,
+        );
+      }
+      await Deno.writeTextFile(`${home}/supa.registry`, `aaa|${a}\nbbb|${b}\n`);
+      const log = `${shim}/cli.log`;
+      const sbPath = Deno.build.os === "windows" ? `${shim}/supabase.cmd` : `${shim}/supabase`;
+      const dkPath = Deno.build.os === "windows" ? `${shim}/docker.cmd` : `${shim}/docker`;
+      await Deno.writeTextFile(
+        sbPath,
+        Deno.build.os === "windows"
+          ? `@echo off\r\necho %*>> "${log}"\r\necho %* | findstr /C:" start" >NUL && exit /b 1\r\nexit /b 0\r\n`
+          : `#!/bin/sh\nprintf '%s\\n' "$*" >> "${log}"\ncase " $* " in *" start "*) exit 1;; esac\nexit 0\n`,
+      );
+      // aaa is currently up; bbb is the switch target (down).
+      await Deno.writeTextFile(
+        dkPath,
+        Deno.build.os === "windows"
+          ? `@echo off\r\necho aaa\r\nexit /b 0\r\n`
+          : `#!/bin/sh\nprintf 'aaa\\n'\nexit 0\n`,
+      );
+      if (Deno.build.os !== "windows") {
+        await Deno.chmod(sbPath, 0o755);
+        await Deno.chmod(dkPath, 0o755);
+      }
+      const r = await runSupa(["switch", "bbb"], home, { pathPrefix: shim });
+      ok(r.code === 1, `expected exit 1, got ${r.code}: ${r.err}`);
+      ok(/start failed|supabase start failed/.test(r.err), r.err);
+      const cli = await Deno.readTextFile(log);
+      ok(/start/.test(cli), cli);
+      ok(!/\bstop\b/.test(cli), `must not stop aaa after failed start: ${cli}`);
+    } finally {
+      await Deno.remove(a, { recursive: true });
+      await Deno.remove(b, { recursive: true });
+      await Deno.remove(shim, { recursive: true });
+    }
+  });
+});
+
+Deno.test("park then unpark with trailing slash on the path", async () => {
+  await withHome(async (home) => {
+    const base = await Deno.makeTempDir({ prefix: "supa-park-" });
+    try {
+      await Deno.mkdir(`${base}/withdb/supabase`, { recursive: true });
+      await Deno.writeTextFile(
+        `${base}/withdb/supabase/config.toml`,
+        `project_id = "withdb"\n[api]\nport = 54351\n`,
+      );
+      await Deno.writeTextFile(`${home}/supa.registry`, "");
+      const sep = Deno.build.os === "windows" ? "\\" : "/";
+      const park = await runSupa(["park", base], home);
+      ok(park.code === 0, park.err);
+      const unpark = await runSupa(["unpark", `${base}${sep}`], home);
+      ok(unpark.code === 0, unpark.err);
+      ok(!(await Deno.readTextFile(`${home}/supa.registry`)).includes(base));
+    } finally {
+      await Deno.remove(base, { recursive: true });
+    }
+  });
+});
+
+Deno.test("config max-active rejects an invalid hand-edited value", async () => {
+  await withHome(async (home) => {
+    await Deno.writeTextFile(`${home}/supa.registry`, "web|/tmp/web\n");
+    await Deno.writeTextFile(`${home}/supa.config`, "max_active = 0\n");
+    const r = await runSupa(["config"], home);
+    ok(r.code === 1, `expected exit 1, got ${r.code}`);
+    ok(/invalid max_active/.test(r.err), r.err);
+  });
+});
+
+Deno.test("rotate creates parent dirs for a nested signing_keys_path", async () => {
+  await withHome(async (home) => {
+    const proj = await Deno.makeTempDir({ prefix: "supa-rot-" });
+    const shim = await Deno.makeTempDir({ prefix: "supa-shim-" });
+    try {
+      await Deno.mkdir(`${proj}/supabase`, { recursive: true });
+      await Deno.writeTextFile(
+        `${proj}/supabase/config.toml`,
+        `project_id = "rot"\n[api]\nport = 54321\n[auth]\nsigning_keys_path = "./keys/jwt.json"\n`,
+      );
+      await Deno.writeTextFile(`${home}/supa.registry`, `rot|${proj}\n`);
+      const jwk = JSON.stringify({
+        kty: "EC",
+        kid: "test",
+        crv: "P-256",
+        x: "x",
+        y: "y",
+        d: "d",
+      });
+      const shimPath = Deno.build.os === "windows" ? `${shim}/supabase.cmd` : `${shim}/supabase`;
+      await Deno.writeTextFile(
+        shimPath,
+        Deno.build.os === "windows"
+          ? `@echo off\r\necho ${jwk}\r\nexit /b 0\r\n`
+          : `#!/bin/sh\nprintf '%s\\n' '${jwk}'\nexit 0\n`,
+      );
+      if (Deno.build.os !== "windows") await Deno.chmod(shimPath, 0o755);
+      const r = await runSupa(["rotate", "rot", "--yes"], home, { pathPrefix: shim });
+      ok(r.code === 0, r.err);
+      const keyFile = `${proj}/supabase/keys/jwt.json`;
+      ok(
+        await Deno.stat(keyFile).then(() => true).catch(() => false),
+        `expected key at ${keyFile}`,
       );
     } finally {
       await Deno.remove(proj, { recursive: true });

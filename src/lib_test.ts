@@ -12,6 +12,7 @@ import {
   maskSecret,
   memToMiB,
   parentDir,
+  pathsEqual,
   resolveUnder,
 } from "./util.ts";
 import { configDir, configPath, readConfigKV, registryPath } from "./config.ts";
@@ -83,6 +84,23 @@ Deno.test("absolutize expands ~ and resolves relative against cwd", () => {
   const rel = absolutize("rel-only");
   ok(rel.endsWith(`${SEP}rel-only`), `got ${rel}`);
   ok(rel !== "rel-only", "must not stay relative");
+});
+Deno.test("absolutize strips trailing separators (except filesystem root)", () => {
+  if (Deno.build.os !== "windows") {
+    eq(absolutize("/abs/path/"), "/abs/path");
+    eq(absolutize("/"), "/");
+  } else {
+    eq(absolutize("C:\\abs\\path\\"), "C:\\abs\\path");
+    eq(absolutize("C:\\"), "C:\\");
+  }
+});
+Deno.test("pathsEqual is case-insensitive on Windows only", () => {
+  if (Deno.build.os === "windows") {
+    ok(pathsEqual("C:\\Code", "c:\\code"));
+  } else {
+    ok(!pathsEqual("/Code", "/code"));
+    ok(pathsEqual("/same", "/same"));
+  }
 });
 Deno.test("resolveUnder confines paths under the base dir", () => {
   const base = join("/proj", "web", "supabase");

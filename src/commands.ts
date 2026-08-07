@@ -14,6 +14,7 @@ import {
   memToMiB,
   OS,
   parentDir,
+  pathsEqual,
   readTextFile,
   REPO,
   resolveUnder,
@@ -199,18 +200,21 @@ export async function cmdSwitch(rest: string[]): Promise<void> {
   if (rest.length !== 1) die("usage: supa switch <project>");
   const target = rest[0];
   if (rootOf(target) === null) die(`unknown project '${target}' (known: ${names().join(" ")})`);
-  // Resolve the target BEFORE stopping anyone, so an unresolvable project doesn't
+  // Resolve the target BEFORE mutating anyone, so an unresolvable project doesn't
   // tear down every running stack and then fail.
   if (!cfgDir(target)) die(`no supabase/config.toml under '${rootOf(target)}' for '${target}'`);
   const tgt = labelOf(target);
   if (!tgt) die(`cannot resolve project_id for '${target}'`);
+  // Start the target first so a failed start cannot leave every other stack
+  // down. May briefly exceed max-active; others are stopped right after.
+  const alreadyUp = (await runningLabels()).includes(tgt);
+  if (!alreadyUp) await startStack(target);
   for (const l of await runningLabels()) {
     if (l === tgt) continue;
     const nm = nameForLabel(l);
     if (nm) await stopStack(nm);
     else console.error(`! running stack '${l}' not in registry — leaving it up`);
   }
-  await startStack(target);
 }
 export async function cmdRestart(rest: string[]): Promise<void> {
   if (rest.length < 1) die("usage: supa restart <project...>");
@@ -651,7 +655,7 @@ export function cmdPark(rest: string[]): void {
   const abs = absolutize(rest[0]);
   if (!isDir(abs)) die(`'${abs}' is not a directory`);
   ensureRegistry();
-  if (parkedDirs().includes(abs)) die(`'${abs}' is already parked`);
+  if (parkedDirs().some((d) => pathsEqual(d, abs))) die(`'${abs}' is already parked`);
   // Capture names already claimed (explicit + earlier parks) BEFORE writing, so
   // we can warn about shadowed subdirs that readRegistry will silently skip.
   const taken = new Set(names());
@@ -685,7 +689,9 @@ export function cmdPark(rest: string[]): void {
 export function cmdUnpark(rest: string[]): void {
   if (rest.length !== 1) die("usage: supa unpark <dir>");
   const abs = absolutize(rest[0]);
-  if (!parkedDirs().includes(abs)) die(`'${abs}' is not parked ('supa park' lists parked dirs)`);
+  if (!parkedDirs().some((d) => pathsEqual(d, abs))) {
+    die(`'${abs}' is not parked ('supa park' lists parked dirs)`);
+  }
   const reg = registryPath();
   const kept = readTextFile(reg).split(/\r?\n/).filter((line) => {
     const t = line.trim();
@@ -694,7 +700,7 @@ export function cmdUnpark(rest: string[]): void {
     if (i < 1) return true;
     // Same shape as parseRegistry — allow "* |/path" spacing.
     if (t.slice(0, i).trim() !== "*") return true;
-    return absolutize(t.slice(i + 1).trim()) !== abs;
+    return !pathsEqual(absolutize(t.slice(i + 1).trim()), abs);
   });
   Deno.writeTextFileSync(reg, kept.join("\n").replace(/\n+$/, "\n"));
   console.log(`supa: unparked ${abs}  (its projects leave the registry; nothing is stopped)`);
@@ -955,6 +961,10 @@ export async function cmdRotate(rest: string[]): Promise<void> {
   } catch (e) {
     die(`bad signing key from the Supabase CLI: ${e instanceof Error ? e.message : e}`);
   }
+  // Nested signing_keys_path (e.g. ./keys/jwt.json) needs its parent created.
+  try {
+    Deno.mkdirSync(parentDir(keyFile), { recursive: true });
+  } catch { /* exists */ }
   // Private key material: owner-only. Deno applies mode on rewrite too, so a
   // world-readable file from an older supa is tightened here. No-op on Windows.
   Deno.writeTextFileSync(keyFile, keyArrayText, { mode: 0o600 });
@@ -1698,8 +1708,9 @@ config.toml. --all skips broken registry rows (warns) so one bad entry
 cannot block stopping the rest. Runs down.pre / down.post only when the
 stack is currently UP (never-started park discoveries stay quiet).`,
   switch: `supa switch <project>   (alias: only)
-Stop every other registered running stack, then start only <project>.
-Running stacks that aren't in the registry are left alone.`,
+Start <project> first (if it isn't already up), then stop every other
+registered running stack. A failed start leaves the others untouched
+(may briefly exceed max-active). Unregistered running stacks are left alone.`,
   destroy: `supa destroy <project> [--yes]
 Stop the stack and DELETE its local data (containers + volumes). Cannot be
 undone. Asks you to type the project name; --yes skips (for scripts).`,
@@ -1734,7 +1745,7 @@ this command is the only network call, and only when you run it.
   env: `supa env <project> [--write [file]]
 Print the stack's keys/URLs, or --write: merge them into a dotenv file
 (default <config-dir>/.env.local) — updates keys in place, keeps other
-lines. Add a supa.env.map next to config.toml to rename keys for your app.`,
+lines. Add a supa.env.map in the project workdir (beside supabase/) to rename keys.`,
   add: `supa add <name> <path> [--init] [--slot 0-9]
 Register a project (path is stored absolute). --init runs 'supabase init' when
 needed and assigns a free 543XX band (or --slot). If a config.toml already

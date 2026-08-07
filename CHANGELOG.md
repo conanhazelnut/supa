@@ -6,6 +6,31 @@ All notable changes to supa are documented here. This project adheres to
 
 ## [Unreleased]
 
+### Fixed
+
+- A failing `down.post` hook warns instead of exiting non-zero after the stack
+  is already stopped (same soft-fail as `up.post`), so `down --all` / `switch`
+  cannot abort mid-list and leave later stacks running.
+- `supa switch` starts the target before stopping others, so a failed start
+  cannot leave every previously running stack down (may briefly exceed
+  `max-active`).
+- `supa ports` auto-pick keeps a project's hand-set slot `0` when that band is
+  still free (assigning a brand-new free slot still only scans `1`–`9`).
+- `supa rotate` creates parent directories for a nested `signing_keys_path`
+  (e.g. `./keys/jwt.json`).
+- `park` / `unpark` treat trailing-slash and Windows case variants as the same
+  path (`absolutize` strips trailing separators; compare is case-insensitive on
+  Windows).
+- An invalid hand-edited `max_active` in `supa.config` now errors instead of
+  silently falling back to `1` (same bar as `SUPA_MAX_ACTIVE`).
+
+### Docs
+
+- Hook failure behaviour documents pre-abort vs post-warn.
+- README lists typed-name confirmation for `restore` and `pg-upgrade` too.
+- `supa.hooks` / `supa.env.map` / `supa.limits` live in the project workdir
+  (beside `supabase/`), not inside it next to `config.toml`.
+
 ## [0.1.4] — 2026-08-08
 
 CLI edge-case hardening from review loops: confine rotate key writes, keep

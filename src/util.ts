@@ -29,12 +29,29 @@ export function expandTilde(p: string): string {
   if (p.startsWith("~/") || p.startsWith("~\\")) return join(home(), p.slice(2));
   return p;
 }
+// Strip trailing separators except at a filesystem root (`/` or `C:\`).
+function stripTrailingSep(p: string): string {
+  if (p.length <= 1) return p;
+  // Windows drive root: `C:\` must keep its separator.
+  if (OS === "windows" && /^[A-Za-z]:[\\/]$/.test(p)) return p;
+  let out = p;
+  while (out.length > 1 && (out.endsWith("/") || out.endsWith("\\"))) {
+    out = out.slice(0, -1);
+  }
+  return out;
+}
 // Expand ~ then make absolute against cwd. Registry entries must survive a later
-// `supa` invocation from a different working directory.
+// `supa` invocation from a different working directory. Trailing separators are
+// stripped so `park ~/code` and `unpark ~/code/` resolve to the same entry.
 export function absolutize(p: string): string {
   const expanded = expandTilde(p);
   if (expanded === "") return expanded;
-  return isAbsolute(expanded) ? expanded : join(Deno.cwd(), expanded);
+  const abs = isAbsolute(expanded) ? expanded : join(Deno.cwd(), expanded);
+  return stripTrailingSep(abs);
+}
+// Path identity for registry roots — Windows paths are case-insensitive.
+export function pathsEqual(a: string, b: string): boolean {
+  return OS === "windows" ? a.toLowerCase() === b.toLowerCase() : a === b;
 }
 export function pathIsAbsolute(p: string): boolean {
   return isAbsolute(p);

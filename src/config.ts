@@ -205,8 +205,12 @@ export function readMaxActive(): { value: number; source: string } {
     if (Number.isInteger(n) && n >= 1) return { value: n, source: "SUPA_MAX_ACTIVE env" };
     die(`invalid SUPA_MAX_ACTIVE='${env}' (must be an integer >= 1)`);
   }
-  const n = Number(readConfigKV().max_active);
-  if (Number.isInteger(n) && n >= 1) return { value: n, source: "supa.config" };
+  const raw = readConfigKV().max_active;
+  if (raw !== undefined && raw !== "") {
+    const n = Number(raw);
+    if (Number.isInteger(n) && n >= 1) return { value: n, source: "supa.config" };
+    die(`invalid max_active='${raw}' in ${configPath()} (must be an integer >= 1)`);
+  }
   return { value: 1, source: "default" };
 }
 export function readRamBudget(): number | null {
@@ -245,10 +249,11 @@ export function nextFreeSlot(
       .map(slotOf)
       .filter((s): s is string => s !== null),
   );
-  // Prefer the project's current band when it is free of foreign/other clash.
+  // Prefer the project's current band when it is free of foreign/other clash —
+  // including hand-set slot 0 (assigning a brand-new free slot still scans 1–9).
   if (exceptName) {
     const cur = slotOf(exceptName);
-    if (cur && cur !== "0" && !used.has(cur) && !alsoTaken.has(cur)) return cur;
+    if (cur !== null && !used.has(cur) && !alsoTaken.has(cur)) return cur;
   }
   for (let d = 1; d <= 9; d++) {
     const s = String(d);
