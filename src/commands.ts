@@ -379,16 +379,34 @@ export async function cmdDestroy(rest: string[]): Promise<void> {
   const code = await runInherit(supabaseCmd(), ["--workdir", wd, "stop", "--no-backup"]);
   if (code === 127) die(SUPABASE_MISSING);
   if (code !== 0) die(`'supabase stop --no-backup' failed for '${p}' (exit ${code})`);
-  const { out } = await runCapture("docker", [
+  const volsLs = await runCapture("docker", [
     "volume",
     "ls",
     "-q",
     "--filter",
     `label=com.supabase.cli.project=${lbl}`,
   ]);
-  const vols = out.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+  if (volsLs.code !== 0) {
+    die(
+      withStderr(
+        `stopped '${p}' but could not list its volumes — data may still be on disk`,
+        volsLs.err,
+      ),
+    );
+  }
+  const vols = volsLs.out.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
   if (vols.length) {
-    await runCapture("docker", ["volume", "rm", ...vols]);
+    const rm = await runCapture("docker", ["volume", "rm", ...vols]);
+    if (rm.code !== 0) {
+      die(
+        withStderr(
+          `destroyed containers for '${p}' but failed to remove ${vols.length} volume(s):\n` +
+            `  ${vols.join(" ")}\n` +
+            `  retry: docker volume rm ${vols.join(" ")}`,
+          rm.err,
+        ),
+      );
+    }
     console.log(`  removed ${vols.length} volume(s)`);
   }
   console.log(`✓ destroyed ${p}`);
