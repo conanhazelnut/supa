@@ -242,6 +242,34 @@ export async function stopStack(name: string): Promise<void> {
   if (hooks.downPost) await runHook("down.post", hooks.downPost, wd);
 }
 
+function printMaxActiveHelp(
+  max: number,
+  source: string,
+  running: string[],
+  want: string,
+  // Slots the refused operation would need. Defaults to "one more than what's
+  // listed as already running" — fine for single `up`, wrong for a batch that
+  // itself exceeds the limit with nothing currently up.
+  needSlots?: number,
+): void {
+  const from = source === "default" ? "" : `, from ${source}`;
+  console.error(`supa: max-active limit reached (${max}${from}) — already running:`);
+  for (const l of running) console.error(`  - ${nameForLabel(l) ?? l} (${l})`);
+  console.error("");
+  // The one-off hint must be copy-pasteable in the user's actual shell. In
+  // PowerShell an env var set inline persists for the whole session (unlike the
+  // POSIX `VAR=x cmd` form), so the hint removes it again after the command.
+  const n = needSlots ?? running.length + 1;
+  const oneOff = OS === "windows"
+    ? `$env:SUPA_MAX_ACTIVE=${n}; supa up ${want}; rm env:SUPA_MAX_ACTIVE`
+    : `SUPA_MAX_ACTIVE=${n} supa up ${want}`;
+  console.error(`  free a slot:       supa down <name>`);
+  console.error(`  swap to '${want}':   supa switch ${want}   (stops others, runs only this)`);
+  console.error(`  raise the limit:   supa config max-active ${n}`);
+  console.error(`  or one-off:        ${oneOff}`);
+  Deno.exit(1);
+}
+
 // Refuse to start `name` when that would exceed the max-active limit.
 export async function guard(name: string): Promise<void> {
   const { value: max, source } = readMaxActive();
@@ -251,21 +279,25 @@ export async function guard(name: string): Promise<void> {
   if (target && running.includes(target)) return; // already up — re-up is fine
   const others = running.filter((l) => l !== target);
   if (others.length < max) return;
+  printMaxActiveHelp(max, source, others, name);
+}
 
-  const from = source === "default" ? "" : `, from ${source}`;
-  console.error(`supa: max-active limit reached (${max}${from}) — already running:`);
-  for (const l of others) console.error(`  - ${nameForLabel(l) ?? l} (${l})`);
-  console.error("");
-  // The one-off hint must be copy-pasteable in the user's actual shell. In
-  // PowerShell an env var set inline persists for the whole session (unlike the
-  // POSIX `VAR=x cmd` form), so the hint removes it again after the command.
-  const n = others.length + 1;
-  const oneOff = OS === "windows"
-    ? `$env:SUPA_MAX_ACTIVE=${n}; supa up ${name}; rm env:SUPA_MAX_ACTIVE`
-    : `SUPA_MAX_ACTIVE=${n} supa up ${name}`;
-  console.error(`  free a slot:       supa down <name>`);
-  console.error(`  swap to '${name}':   supa switch ${name}   (stops others, runs only this)`);
-  console.error(`  raise the limit:   supa config max-active ${n}`);
-  console.error(`  or one-off:        ${oneOff}`);
-  Deno.exit(1);
+// Preflight for `supa up a b …`: refuse the whole list when starting every
+// not-yet-running project would push past max-active. Avoids starting `a` then
+// dying on `b` and leaving a partial run.
+export async function guardMany(toStart: string[]): Promise<void> {
+  const { value: max, source } = readMaxActive();
+  if (max === Infinity) return;
+  const running = await runningLabels();
+  const runningSet = new Set(running);
+  const needStart: string[] = [];
+  for (const name of toStart) {
+    const lbl = labelOf(name);
+    if (lbl && runningSet.has(lbl)) continue;
+    needStart.push(name);
+  }
+  const needSlots = running.length + needStart.length;
+  if (needSlots <= max) return;
+  const want = needStart[0] ?? toStart[0];
+  printMaxActiveHelp(max, source, running, want, needSlots);
 }

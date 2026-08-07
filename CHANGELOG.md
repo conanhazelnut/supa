@@ -4,6 +4,26 @@ All notable changes to supa are documented here. This project adheres to
 [Semantic Versioning](https://semver.org/) and
 [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.1.3] — 2026-08-07
+
+Hardening for multi-project runs: refuse half-applied up/down lists, make
+destroy volume failures visible, flag duplicate docker labels in doctor, and
+stream backup dumps instead of buffering them in memory.
+
+### Fixed
+
+- `supa up` / `supa down` validate every name (and `up`'s max-active budget)
+  before mutating any stack, so a later failure cannot leave a partial run.
+- `supa destroy` reports `docker volume ls` / `rm` failures instead of claiming
+  success while data volumes remain.
+- `supa doctor` reports two registry names that share the same `project_id`
+  (same docker label).
+
+### Changed
+
+- `supa backup` streams dump parts into the `.partial` file instead of holding
+  the whole SQL dump in memory; on-disk layout is unchanged.
+
 ## [0.1.2] — 2026-07-28
 
 Security hardening pass: secret files are owner-only, two injection vectors are
@@ -105,6 +125,7 @@ Supabase stacks (one per project) on top of the official Supabase CLI.
   with checksum verification and a signed build-provenance attestation. Unit +
   CLI integration tests; CI runs fmt / lint / check / test on Linux and Windows.
 
+[0.1.3]: https://github.com/conanhazelnut/supa/releases/tag/v0.1.3
 [0.1.2]: https://github.com/conanhazelnut/supa/releases/tag/v0.1.2
 [0.1.1]: https://github.com/conanhazelnut/supa/releases/tag/v0.1.1
 [0.1.0]: https://github.com/conanhazelnut/supa/releases/tag/v0.1.0

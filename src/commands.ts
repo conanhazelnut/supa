@@ -67,6 +67,7 @@ import {
   dbContainer,
   foreignSlots,
   guard,
+  guardMany,
   nameForLabel,
   runCapture,
   runHook,
@@ -97,17 +98,20 @@ async function readLine(prompt: string): Promise<string> {
 
 export async function cmdUp(rest: string[]): Promise<void> {
   if (rest.length < 1) die("usage: supa up <project...>");
-  for (const p of rest) {
-    if (rootOf(p) === null) die(`unknown project '${p}' (known: ${names().join(" ")})`);
-  }
-  for (const p of rest) {
-    await guard(p);
-    await startStack(p);
-  }
+  // Validate every name + the max-active budget BEFORE starting anyone, so a
+  // later failure can't leave earlier stacks up under a broken partial run.
+  for (const p of rest) requireProject(p);
+  await guardMany(rest);
+  for (const p of rest) await startStack(p);
 }
 export async function cmdDown(rest: string[]): Promise<void> {
   if (rest.length < 1) die("usage: supa down <project...> | supa down --all");
   const list = rest[0] === "--all" ? names() : rest;
+  // Same preflight as up: refuse the whole list if any name is unknown, so we
+  // never stop A then die on B and leave the registry half-acted-on.
+  if (rest[0] !== "--all") {
+    for (const p of list) requireProject(p);
+  }
   for (const p of list) await stopStack(p);
 }
 export async function cmdSwitch(rest: string[]): Promise<void> {
@@ -375,16 +379,34 @@ export async function cmdDestroy(rest: string[]): Promise<void> {
   const code = await runInherit(supabaseCmd(), ["--workdir", wd, "stop", "--no-backup"]);
   if (code === 127) die(SUPABASE_MISSING);
   if (code !== 0) die(`'supabase stop --no-backup' failed for '${p}' (exit ${code})`);
-  const { out } = await runCapture("docker", [
+  const volsLs = await runCapture("docker", [
     "volume",
     "ls",
     "-q",
     "--filter",
     `label=com.supabase.cli.project=${lbl}`,
   ]);
-  const vols = out.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+  if (volsLs.code !== 0) {
+    die(
+      withStderr(
+        `stopped '${p}' but could not list its volumes — data may still be on disk`,
+        volsLs.err,
+      ),
+    );
+  }
+  const vols = volsLs.out.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
   if (vols.length) {
-    await runCapture("docker", ["volume", "rm", ...vols]);
+    const rm = await runCapture("docker", ["volume", "rm", ...vols]);
+    if (rm.code !== 0) {
+      die(
+        withStderr(
+          `destroyed containers for '${p}' but failed to remove ${vols.length} volume(s):\n` +
+            `  ${vols.join(" ")}\n` +
+            `  retry: docker volume rm ${vols.join(" ")}`,
+          rm.err,
+        ),
+      );
+    }
     console.log(`  removed ${vols.length} volume(s)`);
   }
   console.log(`✓ destroyed ${p}`);
@@ -616,6 +638,19 @@ export async function cmdDoctor(): Promise<void> {
     }
   }
   console.log(`  ${ok(!collision)} no port collisions`);
+  // Same docker label on two projects: switch/destroy/status attribute containers
+  // to the wrong one. Surfaces here so a duplicated project_id isn't silent.
+  const labels: Record<string, string> = {};
+  let labelClash = false;
+  for (const p of projs) {
+    const lbl = labelOf(p.name);
+    if (!lbl) continue;
+    if (labels[lbl]) {
+      labelClash = true;
+      console.log(`     ✗ label '${lbl}': ${labels[lbl]} vs ${p.name}`);
+    } else labels[lbl] = p.name;
+  }
+  console.log(`  ${ok(!labelClash)} no duplicate project_id labels`);
   // 543XX bands held by containers outside supa: supa can't (and won't) move them,
   // but a stack pointed at one of those bands will fail to bind.
   const foreign = await foreignSlots();
@@ -752,9 +787,10 @@ export async function cmdRotate(rest: string[]): Promise<void> {
   console.log(`✓ rotated ${p}`);
 }
 // Dump `type` (roles/schema/data, or full) for project p into finalPath, atomically:
-// each part → a temp file, concatenated in restore order, then renamed into place
-// so a failed dump never leaves a usable-looking file. Throws on failure; callers
-// die. Assumes the target directory already exists and the stack is up.
+// each part → a temp file, streamed into a .partial in restore order, then renamed
+// so a failed dump never leaves a usable-looking file. Streams (does not hold the
+// whole dump in memory). Throws on failure; callers die. Assumes the target
+// directory already exists and the stack is up.
 async function performBackup(
   p: string,
   wd: string,
@@ -776,9 +812,18 @@ async function performBackup(
   };
   const parts = partsFor[type];
   const temps: string[] = [];
+  let outFile: Deno.FsFile | null = null;
   try {
-    const chunks: string[] = [];
-    for (const part of parts) {
+    // Dumps hold real data — owner-only; rename carries the mode to finalPath.
+    outFile = await Deno.open(partial, {
+      write: true,
+      create: true,
+      truncate: true,
+      mode: 0o600,
+    });
+    const enc = new TextEncoder();
+    for (let i = 0; i < parts.length; i++) {
+      const part = parts[i];
       const tmp = Deno.makeTempFileSync({ prefix: `supa-backup-${p}-`, suffix: ".sql" });
       temps.push(tmp);
       const code = await runInherit(
@@ -789,13 +834,27 @@ async function performBackup(
       if (code !== 0) {
         throw new Error(`'supabase db dump' (${part.label}) failed for '${p}' (exit ${code})`);
       }
-      const body = Deno.readTextFileSync(tmp);
-      chunks.push(parts.length > 1 ? `-- >>> supa backup: ${part.label} <<<\n${body}` : body);
+      // Match the old string-join layout: "\n" between parts; a section header when
+      // concatenating a multi-part (full) dump.
+      if (i > 0) await outFile.write(enc.encode("\n"));
+      if (parts.length > 1) {
+        await outFile.write(enc.encode(`-- >>> supa backup: ${part.label} <<<\n`));
+      }
+      using src = await Deno.open(tmp, { read: true });
+      const buf = new Uint8Array(64 * 1024);
+      while (true) {
+        const n = await src.read(buf);
+        if (n === null) break;
+        await outFile.write(buf.subarray(0, n));
+      }
     }
-    // Dumps hold real data — owner-only; rename carries the mode to finalPath.
-    Deno.writeTextFileSync(partial, chunks.join("\n"), { mode: 0o600 });
+    outFile.close();
+    outFile = null;
     Deno.renameSync(partial, finalPath);
   } catch (e) {
+    try {
+      outFile?.close();
+    } catch { /* ignore */ }
     try {
       Deno.removeSync(partial);
     } catch { /* ignore */ }

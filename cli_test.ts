@@ -360,3 +360,80 @@ Deno.test("ports refuses a slot used by another project unless --force", async (
     }
   });
 });
+
+// TEETH: down used to stop A then die on B mid-list. Preflight must reject the
+// whole list first — REVERT → RED (error may still happen, but after a stop).
+Deno.test("down refuses an unknown name before stopping any stack", async () => {
+  await withHome(async (home) => {
+    const proj = await Deno.makeTempDir({ prefix: "supa-proj-" });
+    try {
+      await Deno.mkdir(`${proj}/supabase`, { recursive: true });
+      await Deno.writeTextFile(
+        `${proj}/supabase/config.toml`,
+        `project_id = "web"\n[api]\nport = 54321\n`,
+      );
+      await Deno.writeTextFile(`${home}/supa.registry`, `web|${proj}\n`);
+      const r = await runSupa(["down", "web", "nope"], home);
+      ok(r.code === 1, `expected exit 1, got ${r.code}`);
+      ok(/unknown project 'nope'/.test(r.err), r.err);
+    } finally {
+      await Deno.remove(proj, { recursive: true });
+    }
+  });
+});
+
+// TEETH: batch up must refuse before starting anyone when the list itself would
+// exceed max-active (even with nothing currently running).
+Deno.test("up refuses a batch that would exceed max-active before starting any", async () => {
+  await withHome(async (home) => {
+    const a = await Deno.makeTempDir({ prefix: "supa-a-" });
+    const b = await Deno.makeTempDir({ prefix: "supa-b-" });
+    try {
+      for (const [dir, id, api] of [[a, "aaa", 54331], [b, "bbb", 54351]] as const) {
+        await Deno.mkdir(`${dir}/supabase`, { recursive: true });
+        await Deno.writeTextFile(
+          `${dir}/supabase/config.toml`,
+          `project_id = "${id}"\n[api]\nport = ${api}\n[db]\nport = ${api + 1}\n`,
+        );
+      }
+      await Deno.writeTextFile(`${home}/supa.registry`, `aaa|${a}\nbbb|${b}\n`);
+      await Deno.writeTextFile(`${home}/supa.config`, "max_active = 1\n");
+      const r = await runSupa(["up", "aaa", "bbb"], home);
+      ok(r.code === 1, `expected exit 1, got ${r.code}`);
+      ok(/max-active limit reached/.test(r.err), r.err);
+      // Hint must cover the whole batch (and any already-running stacks on the host).
+      const m = r.err.match(/config max-active (\d+)/) ??
+        r.err.match(/SUPA_MAX_ACTIVE=(\d+)/);
+      ok(m !== null && Number(m[1]) >= 2, r.err);
+    } finally {
+      await Deno.remove(a, { recursive: true });
+      await Deno.remove(b, { recursive: true });
+    }
+  });
+});
+
+Deno.test("doctor reports duplicate project_id labels", async () => {
+  await withHome(async (home) => {
+    const a = await Deno.makeTempDir({ prefix: "supa-a-" });
+    const b = await Deno.makeTempDir({ prefix: "supa-b-" });
+    try {
+      for (const [dir, api] of [[a, 54331], [b, 54351]] as const) {
+        await Deno.mkdir(`${dir}/supabase`, { recursive: true });
+        await Deno.writeTextFile(
+          `${dir}/supabase/config.toml`,
+          `project_id = "same"\n[api]\nport = ${api}\n[db]\nport = ${api + 1}\n[studio]\nport = ${
+            api + 2
+          }\n`,
+        );
+      }
+      await Deno.writeTextFile(`${home}/supa.registry`, `one|${a}\ntwo|${b}\n`);
+      const r = await runSupa(["doctor"], home);
+      ok(r.code === 0, r.err);
+      ok(/duplicate project_id/.test(r.out) || /label 'same'/.test(r.out), r.out);
+      ok(/one vs two|two vs one/.test(r.out), r.out);
+    } finally {
+      await Deno.remove(a, { recursive: true });
+      await Deno.remove(b, { recursive: true });
+    }
+  });
+});
