@@ -6,6 +6,12 @@ All notable changes to supa are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [0.1.4] — 2026-08-08
+
+CLI edge-case hardening from review loops: confine rotate key writes, keep
+`add --init` / park / hooks / config paths honest, and tighten restore/backup
+naming so dumps cannot collide or steal across projects.
+
 ### Fixed
 
 - `supa rotate` refuses a `signing_keys_path` that escapes the project's
@@ -231,6 +237,7 @@ Supabase stacks (one per project) on top of the official Supabase CLI.
   with checksum verification and a signed build-provenance attestation. Unit +
   CLI integration tests; CI runs fmt / lint / check / test on Linux and Windows.
 
+[0.1.4]: https://github.com/conanhazelnut/supa/releases/tag/v0.1.4
 [0.1.3]: https://github.com/conanhazelnut/supa/releases/tag/v0.1.3
 [0.1.2]: https://github.com/conanhazelnut/supa/releases/tag/v0.1.2
 [0.1.1]: https://github.com/conanhazelnut/supa/releases/tag/v0.1.1

@@ -7,7 +7,7 @@ import { dirname, isAbsolute, join as stdJoin, resolve, SEPARATOR as SEP } from 
 
 export const OS = Deno.build.os; // "darwin" | "linux" | "windows"
 
-export const VERSION = "0.1.3"; // keep in sync with deno.json + CHANGELOG
+export const VERSION = "0.1.4"; // keep in sync with deno.json + CHANGELOG
 export const REPO = "conanhazelnut/supa";
 
 // User-facing docs live in the repo, which a binary install doesn't have — every
