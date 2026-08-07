@@ -787,9 +787,10 @@ export async function cmdRotate(rest: string[]): Promise<void> {
   console.log(`✓ rotated ${p}`);
 }
 // Dump `type` (roles/schema/data, or full) for project p into finalPath, atomically:
-// each part → a temp file, concatenated in restore order, then renamed into place
-// so a failed dump never leaves a usable-looking file. Throws on failure; callers
-// die. Assumes the target directory already exists and the stack is up.
+// each part → a temp file, streamed into a .partial in restore order, then renamed
+// so a failed dump never leaves a usable-looking file. Streams (does not hold the
+// whole dump in memory). Throws on failure; callers die. Assumes the target
+// directory already exists and the stack is up.
 async function performBackup(
   p: string,
   wd: string,
@@ -811,9 +812,18 @@ async function performBackup(
   };
   const parts = partsFor[type];
   const temps: string[] = [];
+  let outFile: Deno.FsFile | null = null;
   try {
-    const chunks: string[] = [];
-    for (const part of parts) {
+    // Dumps hold real data — owner-only; rename carries the mode to finalPath.
+    outFile = await Deno.open(partial, {
+      write: true,
+      create: true,
+      truncate: true,
+      mode: 0o600,
+    });
+    const enc = new TextEncoder();
+    for (let i = 0; i < parts.length; i++) {
+      const part = parts[i];
       const tmp = Deno.makeTempFileSync({ prefix: `supa-backup-${p}-`, suffix: ".sql" });
       temps.push(tmp);
       const code = await runInherit(
@@ -824,13 +834,27 @@ async function performBackup(
       if (code !== 0) {
         throw new Error(`'supabase db dump' (${part.label}) failed for '${p}' (exit ${code})`);
       }
-      const body = Deno.readTextFileSync(tmp);
-      chunks.push(parts.length > 1 ? `-- >>> supa backup: ${part.label} <<<\n${body}` : body);
+      // Match the old string-join layout: "\n" between parts; a section header when
+      // concatenating a multi-part (full) dump.
+      if (i > 0) await outFile.write(enc.encode("\n"));
+      if (parts.length > 1) {
+        await outFile.write(enc.encode(`-- >>> supa backup: ${part.label} <<<\n`));
+      }
+      using src = await Deno.open(tmp, { read: true });
+      const buf = new Uint8Array(64 * 1024);
+      while (true) {
+        const n = await src.read(buf);
+        if (n === null) break;
+        await outFile.write(buf.subarray(0, n));
+      }
     }
-    // Dumps hold real data — owner-only; rename carries the mode to finalPath.
-    Deno.writeTextFileSync(partial, chunks.join("\n"), { mode: 0o600 });
+    outFile.close();
+    outFile = null;
     Deno.renameSync(partial, finalPath);
   } catch (e) {
+    try {
+      outFile?.close();
+    } catch { /* ignore */ }
     try {
       Deno.removeSync(partial);
     } catch { /* ignore */ }
