@@ -193,18 +193,25 @@ export function applyEnvMap(
 // Re-band every 543XX port to `slot` (keep the service digit), and pull the
 // edge_runtime inspector_port (default 8083, off-scheme) into 543<slot>8 so it
 // can't collide across projects. Returns updated text + changes.
+// Comment lines are left alone — rewriting `# port = 54321` would churn .bak
+// without changing any operative value.
 export function rebandText(text: string, slot: string): { text: string; changes: string[] } {
   const changes: string[] = [];
-  let out = text.replace(/(=[ \t]*)543(\d)(\d)(?!\d)/g, (_m, pre, oldSlot, svc) => {
-    if (oldSlot !== slot) changes.push(`543${oldSlot}${svc} -> 543${slot}${svc}`);
-    return `${pre}543${slot}${svc}`;
+  const lines = text.split(/\r?\n/);
+  const outLines = lines.map((line) => {
+    if (/^\s*#/.test(line)) return line;
+    let next = line.replace(/(=[ \t]*)543(\d)(\d)(?!\d)/g, (_m, pre, oldSlot, svc) => {
+      if (oldSlot !== slot) changes.push(`543${oldSlot}${svc} -> 543${slot}${svc}`);
+      return `${pre}543${slot}${svc}`;
+    });
+    next = next.replace(/^([ \t]*inspector_port[ \t]*=[ \t]*)(\d+)/, (_m, pre, old) => {
+      const dest = `543${slot}8`;
+      if (old !== dest) changes.push(`inspector_port ${old} -> ${dest}`);
+      return `${pre}${dest}`;
+    });
+    return next;
   });
-  out = out.replace(/^([ \t]*inspector_port[ \t]*=[ \t]*)(\d+)/gm, (_m, pre, old) => {
-    const next = `543${slot}8`;
-    if (old !== next) changes.push(`inspector_port ${old} -> ${next}`);
-    return `${pre}${next}`;
-  });
-  return { text: out, changes };
+  return { text: outLines.join("\n"), changes };
 }
 
 // Normalize `supabase gen signing-key` output (a single JWK object, or an array,
@@ -525,12 +532,13 @@ export function uniqueNames(names: string[]): string[] {
 
 // Ensure config.toml has an active signing_keys_path; return updated text + path.
 export function ensureSigningKeysPath(text: string): { text: string; relPath: string } {
-  const active = text.match(/^\s*signing_keys_path\s*=\s*(?:"([^"]+)"|'([^']+)')/m);
-  if (active) return { text, relPath: active[1] ?? active[2] };
-  const commented = /^([ \t]*)#\s*signing_keys_path\s*=\s*(?:"([^"]+)"|'([^']+)')/m;
+  // Quoted or bare TOML string (same shape as project_id).
+  const active = text.match(/^\s*signing_keys_path\s*=\s*(?:"([^"]+)"|'([^']+)'|([^\s#'"]+))/m);
+  if (active) return { text, relPath: active[1] ?? active[2] ?? active[3] };
+  const commented = /^([ \t]*)#\s*signing_keys_path\s*=\s*(?:"([^"]+)"|'([^']+)'|([^\s#'"]+))/m;
   const cm = text.match(commented);
   if (cm) {
-    const path = cm[2] ?? cm[3];
+    const path = cm[2] ?? cm[3] ?? cm[4];
     return {
       text: text.replace(commented, `$1signing_keys_path = "${path}"`),
       relPath: path,

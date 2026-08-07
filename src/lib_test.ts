@@ -12,8 +12,9 @@ import {
   maskSecret,
   memToMiB,
   parentDir,
+  resolveUnder,
 } from "./util.ts";
-import { configDir, configPath, registryPath } from "./config.ts";
+import { configDir, configPath, readConfigKV, registryPath } from "./config.ts";
 import {
   applyEnvMap,
   attributeUntagged,
@@ -83,6 +84,16 @@ Deno.test("absolutize expands ~ and resolves relative against cwd", () => {
   ok(rel.endsWith(`${SEP}rel-only`), `got ${rel}`);
   ok(rel !== "rel-only", "must not stay relative");
 });
+Deno.test("resolveUnder confines paths under the base dir", () => {
+  const base = join("/proj", "web", "supabase");
+  eq(resolveUnder(base, "./signing_keys.json"), join(base, "signing_keys.json"));
+  eq(resolveUnder(base, "keys.json"), join(base, "keys.json"));
+  eq(resolveUnder(base, "foo/../bar.json"), join(base, "bar.json"));
+  eq(resolveUnder(base, "../../.ssh/id_rsa"), null);
+  eq(resolveUnder(base, "/abs/key.json"), null);
+  eq(resolveUnder(base, "~/secrets.json"), null);
+  eq(resolveUnder(base, ""), null);
+});
 
 // SUPA_HOME / SUPA_REGISTRY / SUPA_CONFIG must survive quoted ~ and relative paths.
 Deno.test("configDir / registryPath / configPath absolutize env overrides", () => {
@@ -105,6 +116,30 @@ Deno.test("configDir / registryPath / configPath absolutize env overrides", () =
     ok(configPath().endsWith(`${SEP}rel-supa.config`), configPath());
     ok(configPath() !== "rel-supa.config");
   } finally {
+    for (const k of keys) {
+      if (prev[k] === undefined) Deno.env.delete(k);
+      else Deno.env.set(k, prev[k]!);
+    }
+  }
+});
+
+Deno.test("readConfigKV strips inline comments from values", () => {
+  const keys = ["SUPA_HOME", "SUPA_REGISTRY", "SUPA_CONFIG", "XDG_CONFIG_HOME"] as const;
+  const prev: Record<string, string | undefined> = {};
+  for (const k of keys) prev[k] = Deno.env.get(k);
+  const dir = Deno.makeTempDirSync({ prefix: "supa-kv-" });
+  try {
+    for (const k of keys) Deno.env.delete(k);
+    Deno.env.set("SUPA_HOME", dir);
+    Deno.writeTextFileSync(
+      `${dir}/supa.config`,
+      "max_active = 2 # twin stacks\nram_budget_gb = 8 # GiB\n",
+    );
+    const kv = readConfigKV();
+    eq(kv.max_active, "2");
+    eq(kv.ram_budget_gb, "8");
+  } finally {
+    Deno.removeSync(dir, { recursive: true });
     for (const k of keys) {
       if (prev[k] === undefined) Deno.env.delete(k);
       else Deno.env.set(k, prev[k]!);
@@ -275,6 +310,14 @@ Deno.test("rebandText does not touch 6-digit numbers", () => {
   const { text } = rebandText("x = 543210\n", "9");
   eq(text, "x = 543210\n");
 });
+Deno.test("rebandText leaves comment lines alone", () => {
+  const src = "# port = 54321\nport = 54321\n# inspector_port = 8083\n";
+  const { text, changes } = rebandText(src, "5");
+  ok(text.includes("# port = 54321"), "comment must stay");
+  ok(text.includes("port = 54351"), "active port rebanded");
+  ok(text.includes("# inspector_port = 8083"), "commented inspector stays");
+  eq(changes.length, 1);
+});
 
 // ---------- RAM parsing -------------------------------------------------------
 Deno.test("memToMiB", () => {
@@ -355,6 +398,12 @@ Deno.test("ensureSigningKeysPath keeps an already-active line", () => {
 });
 Deno.test("ensureSigningKeysPath keeps a single-quoted active line (no duplicate)", () => {
   const src = `[auth]\nsigning_keys_path = './keys.json'\n`;
+  const { text, relPath } = ensureSigningKeysPath(src);
+  eq(text, src);
+  eq(relPath, "./keys.json");
+});
+Deno.test("ensureSigningKeysPath keeps an unquoted active line (no duplicate)", () => {
+  const src = `[auth]\nsigning_keys_path = ./keys.json\n`;
   const { text, relPath } = ensureSigningKeysPath(src);
   eq(text, src);
   eq(relPath, "./keys.json");

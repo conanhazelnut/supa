@@ -16,6 +16,7 @@ import {
   parentDir,
   readTextFile,
   REPO,
+  resolveUnder,
   VERSION,
 } from "./util.ts";
 import {
@@ -186,11 +187,13 @@ export async function cmdDown(rest: string[]): Promise<void> {
     for (const p of list) await stopStack(p);
     return;
   }
-  for (const p of rest) {
+  // Deduplicate like up/restart — `down web web` must not stop then fail.
+  const list = uniqueNames(rest);
+  for (const p of list) {
     requireProject(p);
     requireCfg(p);
   }
-  for (const p of rest) await stopStack(p);
+  for (const p of list) await stopStack(p);
 }
 export async function cmdSwitch(rest: string[]): Promise<void> {
   if (rest.length !== 1) die("usage: supa switch <project>");
@@ -522,12 +525,17 @@ export async function cmdAdd(rest: string[]): Promise<void> {
 
   // Resolve + assert the port slot BEFORE writing the registry / running init,
   // so a clash or full band leaves no half-applied entry.
+  // Existing config + no --slot: keep its ports (use `supa ports` to re-band).
+  // Fresh init, or existing + explicit --slot: pick/assert and reband after.
+  // Never pass `name` to nextFreeSlot here — before the registry write a
+  // park-discovered same name would make us prefer that project's band.
+  const alreadyConfigured = init && cfgCandidates(abs).length > 0;
   let chosen: string | undefined;
-  if (init) {
+  if (init && (!alreadyConfigured || slot !== undefined)) {
     const foreign = await foreignSlots();
     chosen = slot;
     if (chosen === undefined) {
-      const s = nextFreeSlot(new Set(foreign.keys()), name);
+      const s = nextFreeSlot(new Set(foreign.keys()));
       if (s === null) {
         die(
           "no free port slot (0-9 all taken by projects or other containers) — " +
@@ -551,7 +559,7 @@ export async function cmdAdd(rest: string[]): Promise<void> {
   if (init) {
     // Nested apps/*/examples/* configs count — don't scaffold a root that would
     // shadow them (cfgDir prefers root once it exists).
-    if (cfgCandidates(abs).length > 0) {
+    if (alreadyConfigured) {
       console.error(`  note: supabase/config.toml already exists — skipping 'supabase init'`);
     } else {
       console.log(`>> supabase init (${abs})`);
@@ -571,6 +579,13 @@ export async function cmdAdd(rest: string[]): Promise<void> {
       console.log(
         `  assigned slot ${chosen} — ${changes.length} port(s) re-banded (543${chosen}X)`,
       );
+    } else if (alreadyConfigured && slot === undefined) {
+      const s = nextFreeSlot(new Set((await foreignSlots()).keys()));
+      if (s) {
+        console.log(
+          `  existing ports kept — re-band with: supa ports ${name} ${s}`,
+        );
+      }
     }
   }
   const wd = cfgDir(name);
@@ -924,7 +939,16 @@ export async function cmdRotate(rest: string[]): Promise<void> {
   const { text: newCfg, relPath } = ensureSigningKeysPath(cfgText);
   // Supabase resolves signing_keys_path relative to the supabase/ directory
   // (where config.toml lives), and the file must be a JSON *array* of JWKs.
-  const keyFile = join(wd, "supabase", relPath.replace(/^\.\//, ""));
+  // Confine the write — a path with `..` or absolute/~ must not escape the
+  // project (parked configs must not turn rotate into an arbitrary write).
+  const supabaseDir = join(wd, "supabase");
+  const keyFile = resolveUnder(supabaseDir, relPath);
+  if (!keyFile) {
+    die(
+      `signing_keys_path ${JSON.stringify(relPath)} escapes ${supabaseDir} ` +
+        `(or is absolute) — refuse to write the private key outside the project`,
+    );
+  }
   let keyArrayText: string;
   try {
     keyArrayText = signingKeyArray(gen.out);
@@ -1671,7 +1695,8 @@ up.pre / up.post hooks (supa.hooks) and applies supa.limits caps if present.`,
 Stop stack(s) via 'supabase stop' (data stays in the docker volume).
 Named lists refuse the whole batch if any name is unknown / has no
 config.toml. --all skips broken registry rows (warns) so one bad entry
-cannot block stopping the rest. Runs down.pre / down.post hooks if present.`,
+cannot block stopping the rest. Runs down.pre / down.post only when the
+stack is currently UP (never-started park discoveries stay quiet).`,
   switch: `supa switch <project>   (alias: only)
 Stop every other registered running stack, then start only <project>.
 Running stacks that aren't in the registry are left alone.`,
@@ -1679,9 +1704,9 @@ Running stacks that aren't in the registry are left alone.`,
 Stop the stack and DELETE its local data (containers + volumes). Cannot be
 undone. Asks you to type the project name; --yes skips (for scripts).`,
   rotate: `supa rotate <project> [--yes]
-Generate a NEW JWT signing key, write signing_keys.json, set
-signing_keys_path in config.toml, restart. Existing tokens become invalid.
-Gitignore signing_keys.json — it holds the private key.`,
+Generate a NEW JWT signing key under supabase/, set signing_keys_path,
+restart. Paths that escape the project (or are absolute) are refused.
+Existing tokens become invalid. Gitignore the key file — it is private.`,
   backup: `supa backup <project> [--data-only|--schema-only|--roles-only] [--use-copy] [--out <dir>]
 Dump the local DB (stack must be up) to <name>_<YYYY-MM-DD_HHMMSS>.sql.
 Default: full (roles+schema+data). Output dir: --out > 'supa config
@@ -1711,8 +1736,10 @@ Print the stack's keys/URLs, or --write: merge them into a dotenv file
 (default <config-dir>/.env.local) — updates keys in place, keeps other
 lines. Add a supa.env.map next to config.toml to rename keys for your app.`,
   add: `supa add <name> <path> [--init] [--slot 0-9]
-Register a project (path is stored absolute). --init also runs 'supabase init'
-and assigns a free 543XX port band. For a directory of projects, see: supa help park`,
+Register a project (path is stored absolute). --init runs 'supabase init' when
+needed and assigns a free 543XX band (or --slot). If a config.toml already
+exists, init is skipped and ports are kept unless --slot is passed (then
+re-banded). For a directory of projects, see: supa help park`,
   park: `supa park [<dir>] · supa unpark <dir>
 Opt-in auto-discovery: parking a dir makes every immediate subdir that
 contains supabase/config.toml appear as a project (named after the subdir).

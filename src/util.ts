@@ -3,7 +3,7 @@
 // forward-slash join worked, but printed mixed separators in every message on
 // Windows and broke UNC paths by collapsing the leading "\\").
 
-import { dirname, isAbsolute, join as stdJoin } from "@std/path";
+import { dirname, isAbsolute, join as stdJoin, resolve, SEPARATOR as SEP } from "@std/path";
 
 export const OS = Deno.build.os; // "darwin" | "linux" | "windows"
 
@@ -38,6 +38,21 @@ export function absolutize(p: string): string {
 }
 export function pathIsAbsolute(p: string): boolean {
   return isAbsolute(p);
+}
+// Resolve `relPath` under `baseDir`, refusing absolute/~ paths and any result
+// that escapes the base (e.g. `../../.ssh/id_rsa`). Returns null when unsafe.
+// Used by `rotate` so a hostile signing_keys_path cannot write outside supabase/.
+export function resolveUnder(baseDir: string, relPath: string): string | null {
+  const stripped = relPath.replace(/^\.\//, "").replace(/^\.\\/, "");
+  if (stripped === "") return null;
+  const expanded = expandTilde(stripped);
+  if (expanded === "" || isAbsolute(expanded)) return null;
+  const base = resolve(baseDir);
+  const target = resolve(base, expanded);
+  if (target === base) return null;
+  const prefix = base.endsWith(SEP) ? base : base + SEP;
+  if (!target.startsWith(prefix)) return null;
+  return target;
 }
 // Decode file bytes to text, honouring a UTF-16 BOM. Windows PowerShell 5.1's
 // `>` / Out-File write UTF-16LE by default, and decoding that as UTF-8 turns a

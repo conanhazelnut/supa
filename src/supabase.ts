@@ -203,11 +203,13 @@ export async function applyLimits(name: string): Promise<number> {
 // Run a project-declared hook. Hooks are the ONE place supa uses a shell — the
 // command is user-authored config (like a Makefile target), run in the project
 // dir, so this is a deliberate, trusted exception to the no-shell rule.
+// `soft: true` warns on failure instead of dying — used for up.post so a failed
+// post-hook cannot look like a failed start after the stack is already up.
 export async function runHook(
   kind: string,
   cmd: string,
   cwd: string,
-  opts?: { failHint?: string },
+  opts?: { failHint?: string; soft?: boolean },
 ): Promise<void> {
   console.log(`  hook (${kind}): ${cmd}`);
   const [sh, flag] = OS === "windows" ? ["cmd", "/c"] : ["sh", "-c"];
@@ -225,7 +227,12 @@ export async function runHook(
   }
   if (code !== 0) {
     const hint = opts?.failHint ? `\n${opts.failHint}` : "";
-    die(`${kind} hook failed (exit ${code}): ${cmd}${hint}`);
+    const msg = `${kind} hook failed (exit ${code}): ${cmd}${hint}`;
+    if (opts?.soft) {
+      console.error(`supa: warning: ${msg}`);
+      return;
+    }
+    die(msg);
   }
 }
 
@@ -236,7 +243,10 @@ export async function startStack(
   const wd = cfgDir(name);
   if (!wd) die(`no supabase/config.toml under '${rootOf(name)}' for '${name}'`);
   const preHint = opts?.failHint ? { failHint: opts.failHint } : undefined;
-  const postHint = opts?.failHintAfterStart ? { failHint: opts.failHintAfterStart } : preHint;
+  const postHint = opts?.failHintAfterStart
+    ? { failHint: opts.failHintAfterStart, soft: true as const }
+    : { soft: true as const };
+  // Soft-fail postHint even when no custom hint — stack is already up.
   const hooks = readHooks(wd);
   if (hooks.upPre) await runHook("up.pre", hooks.upPre, wd, preHint);
   console.log(`>> starting ${name}  (${wd})`);
@@ -259,12 +269,17 @@ export async function stopStack(name: string): Promise<void> {
   const wd = cfgDir(name);
   if (!wd) die(`unresolvable project '${name}'`);
   const hooks = readHooks(wd);
-  if (hooks.downPre) await runHook("down.pre", hooks.downPre, wd);
+  // Never-started / already-down stacks: still call `supabase stop` (idempotent),
+  // but skip hooks so `down --all` cannot fire shell for park discoveries that
+  // were never brought up.
+  const lbl = labelOf(name);
+  const isUp = lbl !== null && (await runningLabels()).includes(lbl);
+  if (isUp && hooks.downPre) await runHook("down.pre", hooks.downPre, wd);
   console.log(`== stopping ${name}`);
   const code = await runInherit(supabaseCmd(), ["--workdir", wd, "stop"]);
   if (code === 127) die(SUPABASE_MISSING);
   if (code !== 0) die(`supabase stop failed for '${name}' (exit ${code})`);
-  if (hooks.downPost) await runHook("down.post", hooks.downPost, wd);
+  if (isUp && hooks.downPost) await runHook("down.post", hooks.downPost, wd);
 }
 
 function printMaxActiveHelp(

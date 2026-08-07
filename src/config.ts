@@ -30,9 +30,9 @@ import {
 export type { Hooks, Limits, Project };
 
 // ---------- config-dir resolution ---------------------------------------------
-// Env overrides are absolutized (incl. ~) so a quoted `SUPA_HOME='~/…'` or a
-// relative path cannot drift when the next `supa` runs from another cwd —
-// same rule as registry roots and backup_dir.
+// Env overrides are absolutized (incl. ~) so a quoted `SUPA_HOME='~/…'` is not
+// taken literally. Relative env values still resolve against *this* process's
+// cwd (prefer an absolute or ~/ path if you need a stable location).
 export function configDir(): string {
   const explicit = Deno.env.get("SUPA_HOME");
   if (explicit) return absolutize(explicit);
@@ -68,8 +68,15 @@ export function readRegistry(): Project[] {
     );
   }
   const entries = parseRegistry(readTextFile(path));
-  const out = entries.filter((e) => e.name !== "*");
-  const seen = new Set(out.map((e) => e.name));
+  // Explicit entries: first occurrence wins (duplicate hand-edited lines ignored).
+  const out: Project[] = [];
+  const seen = new Set<string>();
+  for (const e of entries) {
+    if (e.name === "*") continue;
+    if (seen.has(e.name)) continue;
+    seen.add(e.name);
+    out.push(e);
+  }
   for (const e of entries) {
     if (e.name !== "*") continue;
     let subs: Deno.DirEntry[];
@@ -161,7 +168,11 @@ export function readConfigKV(): Record<string, string> {
     for (const line of readTextFile(path).split(/\r?\n/)) {
       if (line.trim().startsWith("#")) continue;
       const m = line.match(/^\s*([a-z_]+)\s*=\s*(.*?)\s*$/);
-      if (m) kv[m[1]] = m[2];
+      if (m) {
+        // Strip an unquoted trailing `# comment` so `max_active = 2 # twin`
+        // does not become Number("2 # twin") → NaN → silent default.
+        kv[m[1]] = m[2].replace(/\s+#.*$/, "").trim();
+      }
     }
   }
   return kv;

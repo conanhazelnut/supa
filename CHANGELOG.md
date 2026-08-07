@@ -8,6 +8,24 @@ All notable changes to supa are documented here. This project adheres to
 
 ### Fixed
 
+- `supa rotate` refuses a `signing_keys_path` that escapes the project's
+  `supabase/` directory (or is absolute/~), so a hostile/parked config cannot
+  turn rotate into an arbitrary file write.
+- `supa add --init` no longer prefers a park-discovered project's port band when
+  auto-picking a slot for an override path.
+- `supa add --init` keeps an existing `config.toml`'s ports unless `--slot` is
+  passed (then re-bands); previously it always rebanded after skipping init.
+- `supa.config` values tolerate an inline `# comment` (`max_active = 2 # twin`
+  no longer silently falls back to 1).
+- `down` / `down --all` skip `down.pre` / `down.post` hooks when the stack is
+  not currently UP, so never-started park discoveries cannot fire shell hooks.
+- `ensureSigningKeysPath` recognizes unquoted `signing_keys_path` values (no
+  duplicate line / wrong key file).
+- A failing `up.post` hook warns instead of exiting non-zero after the stack is
+  already up (avoids false "start failed" for automation).
+- Duplicate explicit registry names: first occurrence wins.
+- `supa down` deduplicates project names (same as `up` / `restart`).
+- Port re-banding leaves comment lines alone (no `.bak` churn from `# port = …`).
 - `SUPA_HOME` / `SUPA_REGISTRY` / `SUPA_CONFIG` (and `XDG_CONFIG_HOME`) expand `~`
   and resolve relative paths against cwd — same rule as registry roots and
   `backup-dir`, so a quoted `SUPA_HOME='~/…'` no longer points at a literal `~`.

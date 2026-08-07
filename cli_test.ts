@@ -705,6 +705,61 @@ Deno.test("add --init skips init when a nested monorepo config already exists", 
   });
 });
 
+// Existing config + --init without --slot must keep ports (use `ports` to re-band).
+Deno.test("add --init without --slot keeps existing ports", async () => {
+  await withHome(async (home) => {
+    const proj = await Deno.makeTempDir({ prefix: "supa-keep-" });
+    try {
+      await Deno.mkdir(`${proj}/supabase`, { recursive: true });
+      await Deno.writeTextFile(
+        `${proj}/supabase/config.toml`,
+        `project_id = "keep"\n[api]\nport = 54371\n[db]\nport = 54372\n`,
+      );
+      await Deno.writeTextFile(`${home}/supa.registry`, "");
+      const r = await runSupa(["add", "keep", proj, "--init"], home);
+      ok(r.code === 0, r.err);
+      ok(/already exists — skipping/.test(r.err), r.err);
+      ok(/existing ports kept/.test(r.out), r.out);
+      const cfg = await Deno.readTextFile(`${proj}/supabase/config.toml`);
+      ok(cfg.includes("54371") && cfg.includes("54372"), cfg);
+      ok(!cfg.includes("54311"), "must not auto-reband to slot 1");
+    } finally {
+      await Deno.remove(proj, { recursive: true });
+    }
+  });
+});
+
+// Park-discovered name on slot 5 must not steal the band when overriding with --init.
+Deno.test("add --init override of park name does not prefer parked slot", async () => {
+  await withHome(async (home) => {
+    const base = await Deno.makeTempDir({ prefix: "supa-park-" });
+    const other = await Deno.makeTempDir({ prefix: "supa-other-" });
+    try {
+      await Deno.mkdir(`${base}/web/supabase`, { recursive: true });
+      await Deno.writeTextFile(
+        `${base}/web/supabase/config.toml`,
+        `project_id = "parked"\n[api]\nport = 54351\n[db]\nport = 54352\n`,
+      );
+      await Deno.mkdir(`${other}/supabase`, { recursive: true });
+      await Deno.writeTextFile(
+        `${other}/supabase/config.toml`,
+        `project_id = "explicit"\n[api]\nport = 54361\n[db]\nport = 54362\n`,
+      );
+      await Deno.writeTextFile(`${home}/supa.registry`, `*|${base}\n`);
+      // No --slot: existing config → keep ports (not reband to parked slot 5).
+      const r = await runSupa(["add", "web", other, "--init"], home);
+      ok(r.code === 0, r.err);
+      ok(/overrides park-discovered/.test(r.out), r.out);
+      const cfg = await Deno.readTextFile(`${other}/supabase/config.toml`);
+      ok(cfg.includes("54361"), "must keep new path's band, not parked 54351");
+      ok(!cfg.includes("54351"), cfg);
+    } finally {
+      await Deno.remove(base, { recursive: true });
+      await Deno.remove(other, { recursive: true });
+    }
+  });
+});
+
 // TEETH: down used to stop A then die on B mid-list. Preflight must reject the
 // whole list first — REVERT → RED (error may still happen, but after a stop).
 Deno.test("down refuses an unknown name before stopping any stack", async () => {
@@ -951,4 +1006,87 @@ Deno.test("runStdinFile fails closed on corrupt gzip (no false success)", async 
   } finally {
     await Deno.remove(dir, { recursive: true });
   }
+});
+
+// Inline `# comment` on a config value must not reset max_active to the default.
+Deno.test("config max-active tolerates an inline comment", async () => {
+  await withHome(async (home) => {
+    await Deno.writeTextFile(`${home}/supa.config`, "max_active = 3 # twin + spare\n");
+    await Deno.writeTextFile(`${home}/supa.registry`, "");
+    const r = await runSupa(["config"], home);
+    ok(r.code === 0, r.err);
+    ok(/max.active.*\b3\b/i.test(r.out) || /max_active\s*=\s*3/.test(r.out), r.out);
+  });
+});
+
+// rotate must refuse a signing_keys_path that escapes the project tree.
+Deno.test("rotate refuses a signing_keys_path that escapes the project", async () => {
+  await withHome(async (home) => {
+    const proj = await Deno.makeTempDir({ prefix: "supa-rot-" });
+    const shim = await Deno.makeTempDir({ prefix: "supa-shim-" });
+    const escapeTarget = `${proj}/escaped_key.json`;
+    try {
+      await Deno.mkdir(`${proj}/supabase`, { recursive: true });
+      await Deno.writeTextFile(
+        `${proj}/supabase/config.toml`,
+        `project_id = "rot"\n[api]\nport = 54321\n[auth]\nsigning_keys_path = "../escaped_key.json"\n`,
+      );
+      await Deno.writeTextFile(`${home}/supa.registry`, `rot|${proj}\n`);
+      const shimPath = Deno.build.os === "windows" ? `${shim}/supabase.cmd` : `${shim}/supabase`;
+      const jwk = '{"kty":"EC","kid":"t","crv":"P-256","x":"a","y":"b","d":"c"}';
+      await Deno.writeTextFile(
+        shimPath,
+        Deno.build.os === "windows"
+          ? `@echo off\r\necho ${jwk}\r\nexit /b 0\r\n`
+          : `#!/bin/sh\nprintf '%s\\n' '${jwk}'\nexit 0\n`,
+      );
+      if (Deno.build.os !== "windows") await Deno.chmod(shimPath, 0o755);
+      const r = await runSupa(["rotate", "rot", "--yes"], home, { pathPrefix: shim });
+      ok(r.code === 1, `expected exit 1, got ${r.code}: ${r.err}`);
+      ok(/escapes|refuse/.test(r.err), r.err);
+      ok(
+        !(await Deno.stat(escapeTarget).then(() => true).catch(() => false)),
+        "must not write the escaped key file",
+      );
+    } finally {
+      await Deno.remove(proj, { recursive: true });
+      await Deno.remove(shim, { recursive: true });
+    }
+  });
+});
+
+// Already-down stacks: down must not run down.pre hooks (park / never-started).
+Deno.test("down skips hooks when the stack is not running", async () => {
+  await withHome(async (home) => {
+    const proj = await Deno.makeTempDir({ prefix: "supa-hook-" });
+    const shim = await Deno.makeTempDir({ prefix: "supa-shim-" });
+    try {
+      await Deno.mkdir(`${proj}/supabase`, { recursive: true });
+      await Deno.writeTextFile(
+        `${proj}/supabase/config.toml`,
+        `project_id = "hooky"\n[api]\nport = 54321\n`,
+      );
+      const marker = `${proj}/hook-fired`;
+      await Deno.writeTextFile(
+        `${proj}/supabase/supa.hooks`,
+        `down.pre = touch ${marker}\n`,
+      );
+      await Deno.writeTextFile(`${home}/supa.registry`, `hooky|${proj}\n`);
+      const shimPath = Deno.build.os === "windows" ? `${shim}/supabase.cmd` : `${shim}/supabase`;
+      await Deno.writeTextFile(
+        shimPath,
+        Deno.build.os === "windows" ? "@echo off\r\nexit /b 0\r\n" : "#!/bin/sh\nexit 0\n",
+      );
+      if (Deno.build.os !== "windows") await Deno.chmod(shimPath, 0o755);
+      const r = await runSupa(["down", "hooky"], home, { pathPrefix: shim });
+      ok(r.code === 0, r.err);
+      ok(
+        !(await Deno.stat(marker).then(() => true).catch(() => false)),
+        "down.pre must not fire when the stack is not UP",
+      );
+    } finally {
+      await Deno.remove(proj, { recursive: true });
+      await Deno.remove(shim, { recursive: true });
+    }
+  });
 });
