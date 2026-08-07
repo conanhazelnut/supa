@@ -638,6 +638,19 @@ export async function cmdDoctor(): Promise<void> {
     }
   }
   console.log(`  ${ok(!collision)} no port collisions`);
+  // Same docker label on two projects: switch/destroy/status attribute containers
+  // to the wrong one. Surfaces here so a duplicated project_id isn't silent.
+  const labels: Record<string, string> = {};
+  let labelClash = false;
+  for (const p of projs) {
+    const lbl = labelOf(p.name);
+    if (!lbl) continue;
+    if (labels[lbl]) {
+      labelClash = true;
+      console.log(`     ✗ label '${lbl}': ${labels[lbl]} vs ${p.name}`);
+    } else labels[lbl] = p.name;
+  }
+  console.log(`  ${ok(!labelClash)} no duplicate project_id labels`);
   // 543XX bands held by containers outside supa: supa can't (and won't) move them,
   // but a stack pointed at one of those bands will fail to bind.
   const foreign = await foreignSlots();

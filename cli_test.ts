@@ -411,3 +411,29 @@ Deno.test("up refuses a batch that would exceed max-active before starting any",
     }
   });
 });
+
+Deno.test("doctor reports duplicate project_id labels", async () => {
+  await withHome(async (home) => {
+    const a = await Deno.makeTempDir({ prefix: "supa-a-" });
+    const b = await Deno.makeTempDir({ prefix: "supa-b-" });
+    try {
+      for (const [dir, api] of [[a, 54331], [b, 54351]] as const) {
+        await Deno.mkdir(`${dir}/supabase`, { recursive: true });
+        await Deno.writeTextFile(
+          `${dir}/supabase/config.toml`,
+          `project_id = "same"\n[api]\nport = ${api}\n[db]\nport = ${api + 1}\n[studio]\nport = ${
+            api + 2
+          }\n`,
+        );
+      }
+      await Deno.writeTextFile(`${home}/supa.registry`, `one|${a}\ntwo|${b}\n`);
+      const r = await runSupa(["doctor"], home);
+      ok(r.code === 0, r.err);
+      ok(/duplicate project_id/.test(r.out) || /label 'same'/.test(r.out), r.out);
+      ok(/one vs two|two vs one/.test(r.out), r.out);
+    } finally {
+      await Deno.remove(a, { recursive: true });
+      await Deno.remove(b, { recursive: true });
+    }
+  });
+});
