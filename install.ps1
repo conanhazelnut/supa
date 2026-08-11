@@ -25,18 +25,45 @@ $sumsUrl = "$base/SHA256SUMS.txt"
 
 Write-Host "supa: installing x86_64-pc-windows-msvc ($version) -> $binDir\supa.exe"
 $tmp = New-TemporaryFile
-# Binary is tens of MB - show progress. Prefer curl.exe (ships with Win10+) for a
-# real progress bar; Invoke-WebRequest alone is silent in PowerShell 7+ and easy
-# to miss in 5.1, so the fallback at least announces the wait.
+
+# Stream-copy with a single clean console bar (same approach as wander). Avoids
+# both Invoke-WebRequest's PS 5.1 progress slowdown and curl's redirect-hop
+# "#=O=#" flicker; the bar only draws once the sized response body is flowing.
+function Download-WithBar([string]$Url, [string]$Out) {
+  $req = [Net.HttpWebRequest]::Create($Url)
+  $req.AllowAutoRedirect = $true
+  $req.UserAgent = "supa-install"
+  $resp = $req.GetResponse()
+  try {
+    $total = $resp.ContentLength
+    $in = $resp.GetResponseStream()
+    $fs = [IO.File]::Create($Out)
+    try {
+      $buf = New-Object byte[] 65536
+      $done = 0; $width = 40; $lastPct = -1
+      $sw = [Diagnostics.Stopwatch]::StartNew()
+      while (($n = $in.Read($buf, 0, $buf.Length)) -gt 0) {
+        $fs.Write($buf, 0, $n); $done += $n
+        if ($total -gt 0) {
+          $pct = [int][math]::Floor(100 * $done / $total)
+          if ($pct -ne $lastPct) {
+            $lastPct = $pct
+            $filled = [int]($pct * $width / 100)
+            $bar = ("#" * $filled).PadRight($width)
+            $secs = [math]::Max($sw.Elapsed.TotalSeconds, 0.1)
+            Write-Host -NoNewline ("`r  $bar {0,3}%  {1:N1}/{2:N1} MB  {3,6:N1} MB/s" -f `
+              $pct, ($done / 1MB), ($total / 1MB), ($done / 1MB / $secs))
+          }
+        }
+      }
+      if ($total -gt 0) { Write-Host "" }
+    } finally { $fs.Dispose(); $in.Dispose() }
+  } finally { $resp.Dispose() }
+}
+
 Write-Host "supa: downloading..."
 try {
-  if (Get-Command curl.exe -ErrorAction SilentlyContinue) {
-    & curl.exe -fL --proto "=https" --tlsv1.2 --progress-bar -o $tmp.FullName $url
-    if ($LASTEXITCODE -ne 0) { throw "curl exit $LASTEXITCODE" }
-  } else {
-    Write-Host "supa: (curl.exe not found - download may take a minute with no bar)"
-    Invoke-WebRequest -Uri $url -OutFile $tmp -UseBasicParsing
-  }
+  Download-WithBar -Url $url -Out $tmp.FullName
 } catch {
   Remove-Item $tmp -ErrorAction SilentlyContinue
   Write-Error "supa: download failed ($url). Is a release published? https://github.com/$repo/releases"

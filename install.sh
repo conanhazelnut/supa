@@ -38,13 +38,64 @@ fi
 url="$base/supa-$target"
 sums_url="$base/SHA256SUMS.txt"
 
+# bytes -> MB with one decimal (integer math, POSIX)
+fmt_mb() {
+  tenths=$(( $1 * 10 / 1048576 ))
+  echo "$(( tenths / 10 )).$(( tenths % 10 ))"
+}
+
+# curl's --progress-bar flashes an indeterminate "#=O=#" animation while it
+# waits on GitHub redirect hops — looks broken. Same approach as wander:
+# HEAD for final URL + Content-Length, fetch silently, draw ONE clean bar
+# from the file's growth on stderr (only when stderr is a TTY).
+download() {
+  out="$1"
+  src="$2"
+  total="" final="" resp=""
+  resp=$(curl -fsSIL --proto '=https' --tlsv1.2 -w '\n%{url_effective}' "$src" 2>/dev/null) || resp=""
+  if [ -n "$resp" ]; then
+    final=$(printf '%s\n' "$resp" | tail -1)
+    total=$(printf '%s\n' "$resp" | tr -d '\r' | awk 'tolower($1)=="content-length:"{v=$2} END{print v}')
+    case "$total" in ''|*[!0-9]*) total="" ;; esac
+  fi
+  [ -n "$final" ] || final="$src"
+
+  if [ -n "$total" ] && [ "$total" -gt 0 ] && [ -t 2 ]; then
+    curl -fsSL --proto '=https' --tlsv1.2 -o "$out" "$final" &
+    pid=$!
+    # shellcheck disable=SC2064
+    trap "kill $pid 2>/dev/null; exit 130" INT TERM
+    width=40 size=0 pct=0 filled=0 bar="" rc=0 iter=0
+    total_mb=$(fmt_mb "$total")
+    while kill -0 "$pid" 2>/dev/null; do
+      iter=$(( iter + 1 ))
+      size=$(stat -f%z "$out" 2>/dev/null || stat -c%s "$out" 2>/dev/null || echo 0)
+      pct=$(( size * 100 / total ))
+      [ "$pct" -gt 100 ] && pct=100
+      filled=$(( pct * width / 100 ))
+      bar=$(printf '%*s' "$filled" '' | tr ' ' '#')
+      # cumulative average; each loop tick ~= 0.2s
+      printf '\r  %-*s %3d%%  %s/%s MB  %6s MB/s' \
+        "$width" "$bar" "$pct" "$(fmt_mb "$size")" "$total_mb" "$(fmt_mb $(( size * 5 / iter )))" >&2
+      sleep 0.2
+    done
+    wait "$pid" || rc=$?
+    trap - INT TERM
+    if [ "$rc" -ne 0 ]; then printf '\n' >&2; return "$rc"; fi
+    bar=$(printf '%*s' "$width" '' | tr ' ' '#')
+    [ "$iter" -gt 0 ] || iter=1
+    printf '\r  %s 100%%  %s/%s MB  %6s MB/s\n' \
+      "$bar" "$total_mb" "$total_mb" "$(fmt_mb $(( total * 5 / iter )))" >&2
+  else
+    curl -fsSL --proto '=https' --tlsv1.2 -o "$out" "$final"
+  fi
+}
+
 echo "supa: installing $target ($VERSION) -> $BIN_DIR/supa"
 mkdir -p "$BIN_DIR"
 tmp="$(mktemp)"
-# --progress-bar (not -s): the binary is tens of MB; users need to see it moving.
-# Checksum + registry seed stay silent — those are tiny.
 echo "supa: downloading..."
-if ! curl -fL --proto '=https' --tlsv1.2 --progress-bar "$url" -o "$tmp"; then
+if ! download "$tmp" "$url"; then
   echo "supa: download failed ($url)" >&2
   echo "     Is a release published yet? See https://github.com/$REPO/releases" >&2
   rm -f "$tmp"; exit 1
