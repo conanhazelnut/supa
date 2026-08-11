@@ -41,7 +41,10 @@ sums_url="$base/SHA256SUMS.txt"
 echo "supa: installing $target ($VERSION) -> $BIN_DIR/supa"
 mkdir -p "$BIN_DIR"
 tmp="$(mktemp)"
-if ! curl -fSL --proto '=https' --tlsv1.2 "$url" -o "$tmp"; then
+# --progress-bar (not -s): the binary is tens of MB; users need to see it moving.
+# Checksum + registry seed stay silent — those are tiny.
+echo "supa: downloading..."
+if ! curl -fL --proto '=https' --tlsv1.2 --progress-bar "$url" -o "$tmp"; then
   echo "supa: download failed ($url)" >&2
   echo "     Is a release published yet? See https://github.com/$REPO/releases" >&2
   rm -f "$tmp"; exit 1

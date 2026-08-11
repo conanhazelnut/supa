@@ -25,8 +25,18 @@ $sumsUrl = "$base/SHA256SUMS.txt"
 
 Write-Host "supa: installing x86_64-pc-windows-msvc ($version) -> $binDir\supa.exe"
 $tmp = New-TemporaryFile
+# Binary is tens of MB - show progress. Prefer curl.exe (ships with Win10+) for a
+# real progress bar; Invoke-WebRequest alone is silent in PowerShell 7+ and easy
+# to miss in 5.1, so the fallback at least announces the wait.
+Write-Host "supa: downloading..."
 try {
-  Invoke-WebRequest -Uri $url -OutFile $tmp -UseBasicParsing
+  if (Get-Command curl.exe -ErrorAction SilentlyContinue) {
+    & curl.exe -fL --proto "=https" --tlsv1.2 --progress-bar -o $tmp.FullName $url
+    if ($LASTEXITCODE -ne 0) { throw "curl exit $LASTEXITCODE" }
+  } else {
+    Write-Host "supa: (curl.exe not found - download may take a minute with no bar)"
+    Invoke-WebRequest -Uri $url -OutFile $tmp -UseBasicParsing
+  }
 } catch {
   Remove-Item $tmp -ErrorAction SilentlyContinue
   Write-Error "supa: download failed ($url). Is a release published? https://github.com/$repo/releases"
