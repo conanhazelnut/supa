@@ -6,10 +6,24 @@ All notable changes to supa are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [0.1.6] — 2026-08-11
+
+Ships the 0.1.5 work that never reached a GitHub Release (Windows CI failed on
+the tag build), plus the test-harness fix that unblocked it.
+
+### Fixed
+
+- Windows CI: pass `PATHEXT` / `ComSpec` into the test child so `.cmd` docker
+  shims resolve; match quoted `start` args in the switch shim; use a
+  drive-absolute base in the `resolveUnder` fixture.
+
 ## [0.1.5] — 2026-08-08
 
 Review-loop correctness: soft-fail `down.post`, start-first `switch`, keep
 hand-set slot `0`, and close rotate/park/config/docs edges.
+
+> Tag `v0.1.5` exists but the release job never published binaries — use
+> `v0.1.6`.
 
 ### Fixed
 
@@ -267,6 +281,7 @@ Supabase stacks (one per project) on top of the official Supabase CLI.
   with checksum verification and a signed build-provenance attestation. Unit +
   CLI integration tests; CI runs fmt / lint / check / test on Linux and Windows.
 
+[0.1.6]: https://github.com/conanhazelnut/supa/releases/tag/v0.1.6
 [0.1.5]: https://github.com/conanhazelnut/supa/releases/tag/v0.1.5
 [0.1.4]: https://github.com/conanhazelnut/supa/releases/tag/v0.1.4
 [0.1.3]: https://github.com/conanhazelnut/supa/releases/tag/v0.1.3
