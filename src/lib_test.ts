@@ -103,7 +103,11 @@ Deno.test("pathsEqual is case-insensitive on Windows only", () => {
   }
 });
 Deno.test("resolveUnder confines paths under the base dir", () => {
-  const base = join("/proj", "web", "supabase");
+  // Windows resolve() prefixes the current drive onto root-relative paths like
+  // `\proj\…`, so the fixture must already be drive-absolute or expected≠actual.
+  const base = Deno.build.os === "windows"
+    ? join("C:\\proj", "web", "supabase")
+    : join("/proj", "web", "supabase");
   eq(resolveUnder(base, "./signing_keys.json"), join(base, "signing_keys.json"));
   eq(resolveUnder(base, "keys.json"), join(base, "keys.json"));
   eq(resolveUnder(base, "foo/../bar.json"), join(base, "bar.json"));

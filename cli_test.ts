@@ -28,10 +28,14 @@ async function runSupa(
     SUPA_CONFIG: `${home}/supa.config`,
   };
   if (Deno.build.os === "windows") {
-    for (const k of ["SystemRoot", "USERPROFILE", "TEMP"]) {
+    // clearEnv drops PATHEXT — without it CreateProcess / where.exe skip .cmd
+    // shims and fall through to a real docker.exe (or find nothing). ComSpec is
+    // what actually launches .cmd/.bat when Deno is given a bare name.
+    for (const k of ["SystemRoot", "USERPROFILE", "TEMP", "PATHEXT", "ComSpec"]) {
       const v = Deno.env.get(k);
       if (v) env[k] = v;
     }
+    if (!env.PATHEXT) env.PATHEXT = ".COM;.EXE;.BAT;.CMD;.VBS";
   }
   const { code, stdout, stderr } = await new Deno.Command(Deno.execPath(), {
     args: ["run", "--no-check", "-A", MAIN, ...args],
@@ -1198,7 +1202,9 @@ Deno.test("switch does not stop others when target start fails", async () => {
       await Deno.writeTextFile(
         sbPath,
         Deno.build.os === "windows"
-          ? `@echo off\r\necho %*>> "${log}"\r\necho %* | findstr /C:" start" >NUL && exit /b 1\r\nexit /b 0\r\n`
+          // Deno quotes each arg in %* (`"start"`), so a bare ` start` findstr
+          // never matches — walk %1..%n with %~1 to strip quotes.
+          ? `@echo off\r\necho %*>> "${log}"\r\n:loop\r\nif "%~1"=="" exit /b 0\r\nif /I "%~1"=="start" exit /b 1\r\nshift\r\ngoto loop\r\n`
           : `#!/bin/sh\nprintf '%s\\n' "$*" >> "${log}"\ncase " $* " in *" start "*) exit 1;; esac\nexit 0\n`,
       );
       // aaa is currently up; bbb is the switch target (down).
