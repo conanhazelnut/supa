@@ -1234,6 +1234,58 @@ Deno.test("switch does not stop others when target start fails", async () => {
   });
 });
 
+Deno.test("switch stops a target it just started when another stop fails", async () => {
+  await withHome(async (home) => {
+    const a = await Deno.makeTempDir({ prefix: "supa-a-" });
+    const b = await Deno.makeTempDir({ prefix: "supa-b-" });
+    const shim = await Deno.makeTempDir({ prefix: "supa-shim-" });
+    try {
+      for (const [dir, id, api] of [[a, "aaa", 54331], [b, "bbb", 54351]] as const) {
+        await Deno.mkdir(`${dir}/supabase`, { recursive: true });
+        await Deno.writeTextFile(
+          `${dir}/supabase/config.toml`,
+          `project_id = "${id}"\n[api]\nport = ${api}\n`,
+        );
+      }
+      await Deno.writeTextFile(`${home}/supa.registry`, `aaa|${a}\nbbb|${b}\n`);
+      await Deno.writeTextFile(`${home}/supa.config`, "max_active = 2\n");
+      const log = `${shim}/cli.log`;
+      const sbPath = Deno.build.os === "windows" ? `${shim}/supabase.cmd` : `${shim}/supabase`;
+      const dkPath = Deno.build.os === "windows" ? `${shim}/docker.cmd` : `${shim}/docker`;
+      await Deno.writeTextFile(
+        sbPath,
+        Deno.build.os === "windows"
+          ? `@echo off\r\necho %*>> "${log}"\r\n:loop\r\nif "%~1"=="" exit /b 0\r\nif /I "%~1"=="stop" if "%~2"=="" exit /b 0\r\nif /I "%~1"=="--workdir" if /I "%~2"=="${a}" exit /b 1\r\nshift\r\ngoto loop\r\n`
+          : `#!/bin/sh\nprintf '%s\\n' "$*" >> "${log}"\ncase " $* " in *" stop "*) case " $* " in *"${a}"*) exit 1;; esac;; esac\nexit 0\n`,
+      );
+      await Deno.writeTextFile(
+        dkPath,
+        Deno.build.os === "windows"
+          ? `@echo off\r\necho aaa\r\nexit /b 0\r\n`
+          : `#!/bin/sh\nprintf 'aaa\\n'\nexit 0\n`,
+      );
+      if (Deno.build.os !== "windows") {
+        await Deno.chmod(sbPath, 0o755);
+        await Deno.chmod(dkPath, 0o755);
+      }
+      const r = await runSupa(["switch", "bbb"], home, { pathPrefix: shim });
+      ok(r.code === 1, `expected exit 1, got ${r.code}: ${r.err}`);
+      ok(/could not stop 'aaa'/.test(r.err), r.err);
+      const lines = (await Deno.readTextFile(log)).split(/\r?\n/).filter((l) => l.length > 0);
+      const startAt = lines.findIndex((l) => /\bstart\b/.test(l));
+      const stops = lines.filter((l) => /\bstop\b/.test(l));
+      ok(startAt >= 0 && startAt < lines.findIndex((l) => /\bstop\b/.test(l)), lines.join("\n"));
+      ok(stops.length >= 2, lines.join("\n"));
+      ok(stops[0].includes(a), stops[0]);
+      ok(stops[1].includes(b), stops[1]);
+    } finally {
+      await Deno.remove(a, { recursive: true });
+      await Deno.remove(b, { recursive: true });
+      await Deno.remove(shim, { recursive: true });
+    }
+  });
+});
+
 Deno.test("park then unpark with trailing slash on the path", async () => {
   await withHome(async (home) => {
     const base = await Deno.makeTempDir({ prefix: "supa-park-" });

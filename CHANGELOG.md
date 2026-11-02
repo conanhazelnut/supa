@@ -6,6 +6,13 @@ All notable changes to supa are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [0.2.2] — 2026-11-02
+
+### Fixed
+
+- `switch` stops a target it just started when a later stop of another
+  registered stack fails, and starts again any stacks it had already stopped.
+
 ## [0.2.1] — 2026-11-02
 
 ### Changed
@@ -338,6 +345,7 @@ Supabase stacks (one per project) on top of the official Supabase CLI.
   with checksum verification and a signed build-provenance attestation. Unit +
   CLI integration tests; CI runs fmt / lint / check / test on Linux and Windows.
 
+[0.2.2]: https://github.com/conanhazelnut/supa/releases/tag/v0.2.2
 [0.2.1]: https://github.com/conanhazelnut/supa/releases/tag/v0.2.1
 [0.2.0]: https://github.com/conanhazelnut/supa/releases/tag/v0.2.0
 [0.1.6]: https://github.com/conanhazelnut/supa/releases/tag/v0.1.6

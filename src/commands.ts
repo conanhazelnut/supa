@@ -505,12 +505,24 @@ export async function cmdSwitch(rest: string[]): Promise<void> {
     await guardRam([target], { stopOthersFirst: !hasRoom });
   }
   if (alreadyUp || hasRoom) {
-    if (!alreadyUp) await startOrDie(target);
+    const startedHere = !alreadyUp;
+    if (startedHere) await startOrDie(target);
+    const stopped: string[] = [];
     for (const l of await runningLabels()) {
       if (l === tgt) continue;
       const nm = nameForLabel(l);
-      if (nm) await stopOrDie(nm);
-      else console.error(`! running stack '${l}' not in registry — leaving it up`);
+      if (!nm) {
+        console.error(`! running stack '${l}' not in registry — leaving it up`);
+        continue;
+      }
+      try {
+        await stopStack(nm);
+        stopped.push(nm);
+      } catch (e) {
+        if (!(e instanceof CommandFailed)) throw e;
+        await undoPartialSwitch(target, startedHere, stopped);
+        die(`could not stop '${nm}' during switch: ${e.message}`);
+      }
     }
     return;
   }
@@ -539,6 +551,23 @@ export async function cmdSwitch(rest: string[]): Promise<void> {
     const extra = stillDown.length ? `\n  still down: ${stillDown.join(", ")}` : "";
     die(`${e.message}${extra}`);
   }
+}
+async function undoPartialSwitch(
+  target: string,
+  startedHere: boolean,
+  stopped: string[],
+): Promise<void> {
+  if (startedHere) {
+    try {
+      await stopStack(target);
+    } catch (e) {
+      if (e instanceof CommandFailed) {
+        console.error(`supa: could not stop '${target}' after the switch failed: ${e.message}`);
+      } else throw e;
+    }
+  }
+  const stillDown = await restoreStopped(stopped);
+  if (stillDown.length) console.error(`supa: still down: ${stillDown.join(", ")}`);
 }
 async function restoreStopped(namesToUp: string[]): Promise<string[]> {
   const failed: string[] = [];
@@ -2177,9 +2206,11 @@ cannot block stopping the rest. Runs down.pre / down.post only when the
 stack is currently UP (never-started park discoveries stay quiet).`,
   switch: `supa switch <project>   (alias: only)
 If max-active has room, start <project> first, then stop every other
-registered running stack. If it is already full, stop the others first and
-start them again when the target fails to come up. Unregistered running
-stacks are left alone. A set ram_budget can refuse before anything stops.`,
+registered running stack. If one of those stops fails, the target started
+by this command is stopped and the stacks already stopped are started again.
+If it is already full, stop the others first and start them again when the
+target fails to come up. Unregistered running stacks are left alone. A set
+ram_budget can refuse before anything stops.`,
   destroy: `supa destroy <project> [--yes]
 Stop the stack and DELETE its local data (containers + volumes). Cannot be
 undone. Asks you to type the project name; --yes skips (for scripts).`,
