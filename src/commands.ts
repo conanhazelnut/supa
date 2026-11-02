@@ -64,25 +64,26 @@ import {
   readHooks,
   readLimits,
   readMaxActive,
+  readProjectSlot,
   readRamBudget,
   readRegistry,
-  readSavedSlot,
   registryPath,
   rootOf,
   setConfigKey,
-  slotPath,
+  slotKey,
+  slotsPath,
   syncPortEnvFile,
-  writeSavedSlot,
+  writeProjectSlot,
 } from "./config.ts";
 import { handleMcpMessage, type McpMessage } from "./mcp.ts";
 import {
   effectivePorts,
   envForPorts,
   firstFreeSlot,
+  fixedKeys,
   type FoundPort,
   type HostKey,
   parsePublishedPorts,
-  portMode,
   readHostPorts,
   SLOT_MAX,
 } from "./ports.ts";
@@ -118,30 +119,27 @@ function foundPorts(name: string): FoundPort[] | null {
   if (!f || !isFile(f)) return null;
   return readHostPorts(readTextFile(f));
 }
-function shownPort(name: string, key: HostKey): string {
+function shownPort(name: string, key: HostKey, slot: number | null = null): string {
   const found = foundPorts(name);
-  const wd = cfgDir(name);
-  if (!found || !wd) return "";
-  const saved = portMode(found) === "auto" ? readSavedSlot(wd) : "missing";
-  const slot = typeof saved === "number" ? saved : null;
-  const value = effectivePorts(found, slot)[key];
+  if (!found) return "";
+  const saved = slot === null ? readProjectSlot(name) : slot;
+  const use = typeof saved === "number" ? saved : null;
+  const value = effectivePorts(found, use)[key];
   return value === undefined ? "" : String(value);
+}
+function hasAutoPort(found: FoundPort[]): boolean {
+  const fixed = fixedKeys(found);
+  return Object.keys(effectivePorts(found, 0)).some((key) => !fixed.has(key as HostKey));
 }
 async function portHolders(except?: string): Promise<Map<number, string>> {
   const holders = new Map<number, string>();
   for (const n of names()) {
     if (n === except) continue;
     const found = foundPorts(n);
-    const wd = cfgDir(n);
-    if (!found || !wd || portMode(found) !== "auto") {
-      if (found && portMode(found) === "file") {
-        for (const port of Object.values(effectivePorts(found, null))) holders.set(port, n);
-      }
-      continue;
-    }
-    const saved = readSavedSlot(wd);
-    if (typeof saved !== "number") continue;
-    for (const port of Object.values(effectivePorts(found, saved))) holders.set(port, n);
+    if (!found) continue;
+    const saved = readProjectSlot(n);
+    const slot = typeof saved === "number" ? saved : null;
+    for (const port of Object.values(effectivePorts(found, slot))) holders.set(port, n);
   }
   const ps = await runCapture("docker", [
     "ps",
@@ -153,48 +151,73 @@ async function portHolders(except?: string): Promise<Map<number, string>> {
   for (const row of parsePublishedPorts(ps.out)) {
     if (own && row.label === own) continue;
     const who = row.label ? (nameForLabel(row.label) ?? row.name) : row.name;
-    for (const port of row.ports) if (!holders.has(port)) holders.set(port, who);
+    for (const port of row.ports) holders.set(port, who);
   }
   return holders;
 }
-function refuseHeldSlot(
+function slotAutosFree(
   name: string,
-  slot: number,
   found: FoundPort[],
+  slot: number,
   holders: Map<number, string>,
-): void {
+): boolean {
+  const fixed = fixedKeys(found);
   for (const [key, port] of Object.entries(effectivePorts(found, slot))) {
+    if (fixed.has(key as HostKey)) continue;
+    const who = holders.get(port);
+    if (who && who !== name) return false;
+  }
+  return true;
+}
+function refuseFixedPorts(name: string, found: FoundPort[], holders: Map<number, string>): void {
+  const fixed = fixedKeys(found);
+  for (const [key, port] of Object.entries(effectivePorts(found, null))) {
+    if (!fixed.has(key as HostKey)) continue;
     const who = holders.get(port);
     if (!who || who === name) continue;
     die(
-      `port ${port} (${key}) is held by ${who}.\n` +
-        `  The remembered slot was not changed. Move it with: supa ports ${name}`,
+      `port ${port} (${key}) is set in config.toml and is held by ${who}.\n` +
+        `  That port was not moved.`,
     );
   }
 }
-/** Stock config.toml gets a remembered slot. A committed band is left alone. */
-async function prepareSlot(name: string, prefer?: number): Promise<void> {
+/** Pick a free slot for this machine. Reuse the remembered one only while it is still free. */
+async function prepareSlot(name: string, prefer?: number): Promise<number | null> {
   const wd = cfgDir(name);
   const found = foundPorts(name);
-  if (!wd || !found || portMode(found) !== "auto") return;
-  const saved = readSavedSlot(wd);
-  if (saved === "invalid") die(`invalid slot in ${slotPath(wd)} (want slot = 0-${SLOT_MAX})`);
+  const key = slotKey(name);
+  if (!wd || !found || !key) return null;
   const holders = await portHolders(name);
-  const slot = typeof saved === "number" ? saved : prefer;
-  if (typeof slot === "number") {
-    if (slot < 0 || slot > SLOT_MAX) die(`slot must be ${0}-${SLOT_MAX}`);
-    refuseHeldSlot(name, slot, found, holders);
-    if (saved !== slot) writeSavedSlot(wd, slot);
-    syncPortEnvFile(wd, envForPorts(effectivePorts(found, slot), found));
-    return;
+  refuseFixedPorts(name, found, holders);
+  if (!hasAutoPort(found)) return null;
+  const saved = readProjectSlot(name);
+  if (saved === "invalid") die(`invalid remembered slot for '${name}' (want 0-${SLOT_MAX})`);
+  let slot: number | null = null;
+  if (prefer !== undefined) {
+    if (prefer < 0 || prefer > SLOT_MAX) die(`slot must be 0-${SLOT_MAX}`);
+    if (!slotAutosFree(name, found, prefer, holders)) {
+      die(`slot ${prefer} is not free on this machine.`);
+    }
+    slot = prefer;
+  } else if (typeof saved === "number" && slotAutosFree(name, found, saved, holders)) {
+    slot = saved;
+  } else {
+    slot = firstFreeSlot(new Set(holders.keys()), found);
+    if (slot === null) die(`no free port slot (0-${SLOT_MAX}) on this machine`);
   }
-  const free = firstFreeSlot(new Set(holders.keys()), found);
-  if (free === null) die(`no free port slot (0-${SLOT_MAX})`);
-  writeSavedSlot(wd, free);
-  syncPortEnvFile(wd, envForPorts(effectivePorts(found, free), found));
+  writeProjectSlot(key, slot);
+  syncPortEnvFile(wd, envForPorts(effectivePorts(found, slot), found));
+  return slot;
 }
-async function measureRegistered(): Promise<
-  { ok: true; total: number; runningMiB: number[]; names: string[] } | { ok: false; error: string }
+async function measureStacks(): Promise<
+  {
+    ok: true;
+    total: number;
+    unmanagedMiB: number;
+    runningMiB: number[];
+    managed: string[];
+    unmanaged: string[];
+  } | { ok: false; error: string }
 > {
   const ps = await runCapture("docker", [
     "ps",
@@ -208,11 +231,19 @@ async function measureRegistered(): Promise<
   const labelOfContainer: Record<string, string> = {};
   for (const line of ps.out.split(/\r?\n/)) {
     const [container, lbl] = line.split("\t");
-    if (!container?.trim() || !lbl?.trim() || !nameForLabel(lbl.trim())) continue;
+    if (!container?.trim() || !lbl?.trim()) continue;
     containers.push(container.trim());
     labelOfContainer[container.trim()] = lbl.trim();
   }
-  if (containers.length === 0) return { ok: true, total: 0, runningMiB: [], names: [] };
+  const empty = {
+    ok: true as const,
+    total: 0,
+    unmanagedMiB: 0,
+    runningMiB: [],
+    managed: [],
+    unmanaged: [],
+  };
+  if (containers.length === 0) return empty;
   const st = await runCapture("docker", [
     "stats",
     "--no-stream",
@@ -229,24 +260,45 @@ async function measureRegistered(): Promise<
     if (!lbl) continue;
     perLabel[lbl] = (perLabel[lbl] ?? 0) + memToMiB((mem ?? "").split("/")[0]);
   }
+  const managed: string[] = [];
+  const unmanaged: string[] = [];
+  let unmanagedMiB = 0;
+  for (const [lbl, mib] of Object.entries(perLabel)) {
+    const name = nameForLabel(lbl);
+    if (name) managed.push(name);
+    else {
+      unmanaged.push(lbl);
+      unmanagedMiB += mib;
+    }
+  }
   const runningMiB = Object.values(perLabel);
-  const upNames = Object.keys(perLabel).map((l) => nameForLabel(l) ?? l).sort();
-  return { ok: true, total: runningMiB.reduce((a, b) => a + b, 0), runningMiB, names: upNames };
+  return {
+    ok: true,
+    total: runningMiB.reduce((a, b) => a + b, 0),
+    unmanagedMiB,
+    runningMiB,
+    managed: managed.sort(),
+    unmanaged: unmanaged.sort(),
+  };
 }
 function refuseRam(
   decision: { predictedMiB: number; assumed: boolean },
   budget: number,
-  upNames: string[],
+  managed: string[],
+  unmanaged: string[],
 ): never {
   const assumed = decision.assumed ? " (assuming 1.8 GiB for a stack that is not running)" : "";
-  const who = upNames.length
-    ? `down one of: ${upNames.join(", ")}`
-    : "no registered stack is up to down";
-  die(
+  const lines = [
     `ram_budget would be exceeded${assumed}: ${
       (decision.predictedMiB / 1024).toFixed(1)
-    } GiB > ${budget} GiB.\n  ${who}`,
-  );
+    } GiB > ${budget} GiB.`,
+  ];
+  if (managed.length) lines.push(`  down: ${managed.join(", ")}`);
+  if (unmanaged.length) {
+    lines.push(`  not registered, supa will not stop: ${unmanaged.join(", ")}`);
+  }
+  if (!managed.length && !unmanaged.length) lines.push("  no stack is up to down");
+  die(lines.join("\n"));
 }
 async function guardRam(
   toStart: string[],
@@ -255,7 +307,7 @@ async function guardRam(
   const budget = readRamBudget();
   if (budget === null) return;
   const running = new Set(await runningLabels());
-  const measured = await measureRegistered();
+  const measured = await measureStacks();
   if (!measured.ok) {
     die(`docker stats failed — not starting while ram_budget is set\n  ${measured.error}`);
   }
@@ -265,11 +317,26 @@ async function guardRam(
   }).length;
   const decision = ramDecision({
     budgetGiB: budget,
-    currentMiB: opts?.stopOthersFirst ? 0 : measured.total,
-    runningMiB: opts?.stopOthersFirst ? [] : measured.runningMiB,
+    currentMiB: opts?.stopOthersFirst ? measured.unmanagedMiB : measured.total,
+    runningMiB: measured.runningMiB,
     extras,
   });
-  if (!decision.ok) refuseRam(decision, budget, opts?.stopOthersFirst ? [] : measured.names);
+  if (!decision.ok) {
+    refuseRam(
+      decision,
+      budget,
+      opts?.stopOthersFirst ? [] : measured.managed,
+      measured.unmanaged,
+    );
+  }
+}
+function refuseSharedProjectId(name: string): void {
+  const lbl = labelOf(name);
+  if (!lbl) return;
+  const others = names().filter((n) => n !== name && labelOf(n) === lbl);
+  if (others.length === 0) return;
+  const rows = [name, ...others].map((n) => `${n} (${rootOf(n) ?? "?"})`);
+  die(`project_id '${lbl}' is registered on more than one path:\n  ${rows.join("\n  ")}`);
 }
 async function stopOrDie(name: string): Promise<void> {
   try {
@@ -353,6 +420,7 @@ export async function cmdUp(rest: string[]): Promise<void> {
   for (const p of list) {
     requireProject(p);
     requireCfg(p);
+    refuseSharedProjectId(p);
   }
   await guardMany(list);
   for (const p of list) await prepareSlot(p);
@@ -427,6 +495,7 @@ export async function cmdSwitch(rest: string[]): Promise<void> {
   if (!cfgDir(target)) die(`no supabase/config.toml under '${rootOf(target)}' for '${target}'`);
   const tgt = labelOf(target);
   if (!tgt) die(`cannot resolve project_id for '${target}'`);
+  refuseSharedProjectId(target);
   const running = await runningLabels();
   const alreadyUp = running.includes(tgt);
   const { value: max } = readMaxActive();
@@ -488,6 +557,7 @@ export async function cmdRestart(rest: string[]): Promise<void> {
   for (const p of list) {
     requireProject(p);
     requireCfg(p);
+    refuseSharedProjectId(p);
   }
   // Same preflight as up: starting every currently-down name in this list must
   // fit under max-active (already-up ones are net-zero). Refuse the whole batch
@@ -585,10 +655,30 @@ function unmanagedLabels(running: Set<string>): string[] {
   }
   return [...running].filter((l) => !known.has(l)).sort();
 }
+async function planSlots(): Promise<Map<string, number>> {
+  const base = await portHolders();
+  const taken = new Set(base.keys());
+  const plan = new Map<string, number>();
+  for (const n of [...names()].sort()) {
+    const found = foundPorts(n);
+    if (!found || !hasAutoPort(found)) continue;
+    const saved = readProjectSlot(n);
+    const remembered = typeof saved === "number" && slotAutosFree(n, found, saved, base)
+      ? saved
+      : null;
+    const slot = remembered ?? firstFreeSlot(taken, found);
+    if (slot === null) continue;
+    plan.set(n, slot);
+    for (const port of Object.values(effectivePorts(found, slot))) taken.add(port);
+  }
+  return plan;
+}
 export async function cmdLs(rest: string[] = []): Promise<void> {
   const running = new Set(await runningLabels());
   const projects = readRegistry().sort((a, b) => (a.name < b.name ? -1 : 1));
   const unmanaged = unmanagedLabels(running);
+  const plan = await planSlots();
+  const port = (name: string, key: HostKey) => shownPort(name, key, plan.get(name) ?? null);
   if (rest.includes("--json")) {
     const out = {
       projects: projects.map((p) => {
@@ -596,9 +686,9 @@ export async function cmdLs(rest: string[] = []): Promise<void> {
         return {
           name: p.name,
           label: lbl,
-          api: shownPort(p.name, "api"),
-          db: shownPort(p.name, "db"),
-          studio: shownPort(p.name, "studio"),
+          api: port(p.name, "api"),
+          db: port(p.name, "db"),
+          studio: port(p.name, "studio"),
           status: lbl && running.has(lbl) ? "up" : "down",
           root: p.root,
           managed: true,
@@ -621,9 +711,9 @@ export async function cmdLs(rest: string[] = []): Promise<void> {
     row([
       p.name,
       lbl,
-      shownPort(p.name, "api"),
-      shownPort(p.name, "db"),
-      shownPort(p.name, "studio"),
+      port(p.name, "api"),
+      port(p.name, "db"),
+      port(p.name, "studio"),
       running.has(lbl) ? "UP" : "down",
       p.root,
     ]);
@@ -872,9 +962,11 @@ export async function cmdAdd(rest: string[]): Promise<void> {
   const existingFound = existingToml && isFile(join(existingToml, "supabase", "config.toml"))
     ? readHostPorts(readTextFile(join(existingToml, "supabase", "config.toml")))
     : null;
-  if (init && prefer !== undefined && (!existingFound || portMode(existingFound) === "auto")) {
+  if (init && prefer !== undefined && existingFound && hasAutoPort(existingFound)) {
     const holders = await portHolders();
-    refuseHeldSlot(name, prefer, existingFound ?? [], holders);
+    if (!slotAutosFree(name, existingFound, prefer, holders)) {
+      die(`slot ${prefer} is not free on this machine.`);
+    }
   }
 
   const reg = registryPath();
@@ -904,14 +996,12 @@ export async function cmdAdd(rest: string[]): Promise<void> {
       }
     }
     const foundNow = foundPorts(name);
-    if (foundNow && portMode(foundNow) === "file") {
-      console.log(`  existing ports kept — they are committed in config.toml`);
+    if (foundNow && !hasAutoPort(foundNow)) {
+      console.log(`  every host port is set in config.toml — left as written`);
     } else if (foundNow) {
-      await prepareSlot(name, prefer);
-      const wdNow = cfgDir(name);
-      const saved = wdNow ? readSavedSlot(wdNow) : "missing";
-      if (typeof saved === "number") {
-        console.log(`  assigned slot ${saved} — config.toml was not changed`);
+      const assigned = await prepareSlot(name, prefer);
+      if (assigned !== null) {
+        console.log(`  this machine will use slot ${assigned} — config.toml was not changed`);
       }
     }
   }
@@ -1038,35 +1128,19 @@ export async function cmdPorts(rest: string[]): Promise<void> {
   const wd = cfgDir(name);
   const found = foundPorts(name);
   if (!wd || !found) die(`no supabase/config.toml for '${name}'`);
-  if (portMode(found) === "file") {
-    die(
-      `'${name}' has committed ports in config.toml. supa will not override them.\n` +
-        `  Edit that file to change the band.`,
-    );
+  if (!hasAutoPort(found)) {
+    die(`'${name}' sets every host port in config.toml. Those values are used as written.`);
   }
-  const holders = await portHolders(name);
-  let slot: number;
-  if (rest[1] === undefined) {
-    const current = readSavedSlot(wd);
-    if (typeof current === "number") slot = current;
-    else {
-      const free = firstFreeSlot(new Set(holders.keys()), found);
-      if (free === null) die(`no free port slot (0-${SLOT_MAX})`);
-      slot = free;
-    }
-  } else {
-    if (!/^\d+$/.test(rest[1])) die(`slot must be 0-${SLOT_MAX}`);
-    slot = Number(rest[1]);
-  }
-  if (slot > SLOT_MAX) die(`slot must be 0-${SLOT_MAX}`);
-  refuseHeldSlot(name, slot, found, holders);
-  writeSavedSlot(wd, slot);
+  const prefer = rest[1] === undefined ? undefined : Number(rest[1]);
+  if (rest[1] !== undefined && !/^\d+$/.test(rest[1])) die(`slot must be 0-${SLOT_MAX}`);
+  const slot = await prepareSlot(name, prefer);
+  if (slot === null) die(`no free port slot (0-${SLOT_MAX}) on this machine`);
   const ports = effectivePorts(found, slot);
-  syncPortEnvFile(wd, envForPorts(ports, found));
   console.log(
-    `supa: ${name} slot ${slot} — API ${ports.api}  DB ${ports.db}  Studio ${ports.studio}`,
+    `supa: ${name} slot ${slot} on this machine — API ${ports.api}  DB ${ports.db}  Studio ${ports.studio}`,
   );
-  console.log(`  config.toml was not changed. Apply with: supa restart ${name}`);
+  console.log(`  remembered in ${slotsPath()}. config.toml was not changed.`);
+  console.log(`  apply with: supa restart ${name}`);
 }
 // Oldest CLI verified to support everything supa drives (signing_keys_path, status -o env).
 const MIN_SUPABASE_CLI = "2.30.0";
@@ -1885,7 +1959,7 @@ export async function cmdLimit(rest: string[]): Promise<void> {
   const wd = cfgDir(p);
   if (!wd) die(`unresolvable project '${p}'`);
   if (Object.keys(readLimits(wd)).length === 0) {
-    die(`no supa.limits for '${p}' — create ${join(wd, "supa.limits")} (see ${DOCS_URL}/SUPA.md)`);
+    die(`no limits for '${p}' — create ${join(wd, ".supa", "limits")} (see ${DOCS_URL}/SUPA.md)`);
   }
   const lbl = labelOf(p);
   if (!lbl || !(await runningLabels()).includes(lbl)) {
@@ -2145,9 +2219,9 @@ lines. Without a supa.env.map, --write renames both the legacy JWT keys and
 the publishable/secret keys. A project file replaces that default.`,
   add: `supa add <name> <path> [--init] [--slot 0-111]
 Register a project (path is stored absolute). --init runs 'supabase init' when
-needed. Stock config.toml ports are left as committed defaults; supa remembers
-a free slot under .supa/ports and passes it to the CLI as environment variables.
-A config that already changed a host port inside 54300-54399 keeps that file.
+needed. Stock config.toml ports stay in the file. This machine remembers a
+free slot in ~/.config/supa/slots and passes it to the CLI as environment
+variables. A port changed in config.toml stays as written.
 For a directory of projects, see: supa help park`,
   park: `supa park [<dir>] · supa unpark <dir>
 Opt-in auto-discovery: parking a dir makes every immediate subdir that

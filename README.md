@@ -9,8 +9,8 @@ project — on a single machine**, on top of the official
 [Supabase CLI](https://supabase.com/docs/guides/local-development). No hand-rolled
 Docker Compose: the CLI still owns every container; supa just decides _which_
 stacks run (up to a limit you set). The Docker label comes from each project's
-`config.toml`. Stock host ports stay in that file; supa assigns a local slot
-and passes it to the CLI.
+`config.toml`. Stock host ports stay in that file; each machine assigns a free
+slot and passes it to the CLI.
 
 TypeScript (a thin `main.ts` over `src/`) compiled with `deno compile` to native
 binaries — `supa` (macOS/Linux) and `supa.exe` (Windows). Whoever runs it needs
@@ -82,12 +82,12 @@ supa add newapp ~/code/newapp --init   # register + scaffold + assign ports
 
 Run `supa help` for the full list.
 
-| Group         | Commands                                                                 |
-| ------------- | ------------------------------------------------------------------------ |
-| **Lifecycle** | `up` · `down [--all]` · `restart` · `switch` · `destroy` · `rotate`      |
-| **Data**      | `backup` · `restore` · `pg-upgrade`                                      |
-| **Inspect**   | `ls` · `status` · `stats` · `logs` · `studio` · `doctor` · `env [--write]` |
-| **Resources** | `limit` · `prune`                                                          |
+| Group         | Commands                                                                         |
+| ------------- | -------------------------------------------------------------------------------- |
+| **Lifecycle** | `up` · `down [--all]` · `restart` · `switch` · `destroy` · `rotate`              |
+| **Data**      | `backup` · `restore` · `pg-upgrade`                                              |
+| **Inspect**   | `ls` · `status` · `stats` · `logs` · `studio` · `doctor` · `env [--write]`       |
+| **Resources** | `limit` · `prune`                                                                |
 | **Manage**    | `add [--init]` · `rm` · `park`/`unpark` · `ports` · `config` · `mcp` · `upgrade` |
 
 `ls`, `status`, `config`, `doctor`, `stats`, `env`, and `up` take `--json`.
@@ -101,8 +101,8 @@ to confirm.
 ## How it works
 
 - The **registry** (`supa.registry`, `name|path` per line) is the only thing you
-  maintain. The Docker label comes from `config.toml`. Stock ports get a local
-  slot under `.supa/ports`; a committed port band is read from the file.
+  maintain. The Docker label comes from `config.toml`. Each machine remembers
+  its own slot in `~/.config/supa/slots`. A port you changed is read from the file.
 - **Config** lives in `SUPA_HOME` (default `~/.config/supa`, `%APPDATA%\supa` on
   Windows): `supa.registry` + `supa.config` (`max_active`, `ram_budget_gb`,
   `backup_dir`).

@@ -118,12 +118,13 @@ export function readHostPorts(toml: string): FoundPort[] {
   return found;
 }
 
-/** `auto` only when every written host port is still the official template value. */
-export function portMode(found: FoundPort[]): "auto" | "file" {
+/** Ports written to a value other than the official template. Only these stay as written. */
+export function fixedKeys(found: FoundPort[]): Set<HostKey> {
+  const fixed = new Set<HostKey>();
   for (const f of found) {
-    if (f.value !== specOf(f.key).stock) return "file";
+    if (f.value !== specOf(f.key).stock) fixed.add(f.key);
   }
-  return "auto";
+  return fixed;
 }
 
 export function parseSlotText(text: string): number | "missing" | "invalid" {
@@ -139,23 +140,17 @@ export function parseSlotText(text: string): number | "missing" | "invalid" {
   return "missing";
 }
 
-export function slotFileText(slot: number): string {
-  return `# supa local port slot. This file is per machine — do not commit.\nslot = ${slot}\n`;
-}
-
-/** Ports this project publishes. Optional smtp/pop3 only when the toml writes them. */
+/** Ports this project publishes. A non-stock value stays; stock ports follow `slot`. */
 export function effectivePorts(found: FoundPort[], slot: number | null): Record<HostKey, number> {
   const written = new Map(found.map((f) => [f.key, f.value]));
-  const mode = portMode(found);
+  const fixed = fixedKeys(found);
   const out = {} as Record<HostKey, number>;
   for (const spec of HOST_PORTS) {
     const explicit = written.get(spec.key);
     if (spec.optional && explicit === undefined) continue;
-    if (mode === "file" || slot === null) {
-      out[spec.key] = explicit ?? spec.stock;
-    } else {
-      out[spec.key] = portForSlot(spec.tail, slot);
-    }
+    if (fixed.has(spec.key)) out[spec.key] = explicit ?? spec.stock;
+    else if (slot === null) out[spec.key] = explicit ?? spec.stock;
+    else out[spec.key] = portForSlot(spec.tail, slot);
   }
   return out;
 }
@@ -164,9 +159,10 @@ export function envForPorts(
   ports: Record<string, number>,
   found: FoundPort[],
 ): Record<string, string> {
-  if (portMode(found) === "file") return {};
+  const fixed = fixedKeys(found);
   const env: Record<string, string> = {};
   for (const spec of HOST_PORTS) {
+    if (fixed.has(spec.key)) continue;
     const value = ports[spec.key];
     if (value === undefined) continue;
     env[spec.env] = String(value);
@@ -216,9 +212,11 @@ export function apiPortMismatch(
 ): string | null {
   const own = rows.filter((r) => r.label === label);
   const published = own.flatMap((r) => r.ports);
-  if (published.length === 0) return null;
-  if (published.includes(expectedApi)) return null;
-  const who = own.find((r) => r.ports.length > 0);
-  return `stack '${label}' published ${published.join(", ")} but slot API is ${expectedApi}` +
+  if (published.includes(expectedApi) || published.length === 0) return null;
+  // Only the stock API port proves the CLI ignored the override. Other published
+  // ports (db, or an excluded gateway) are not a failed assignment.
+  if (!published.includes(54321) || expectedApi === 54321) return null;
+  const who = own.find((r) => r.ports.includes(54321));
+  return `stack '${label}' published 54321 but this machine's API port is ${expectedApi}` +
     (who ? ` (${who.name})` : "");
 }

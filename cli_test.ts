@@ -578,12 +578,11 @@ Deno.test("ports refuses a slot whose ports are already held", async () => {
           `project_id = "${id}"\n[api]\nport = 54321\n[db]\nport = 54322\n`,
         );
       }
-      await Deno.mkdir(`${a}/.supa`, { recursive: true });
-      await Deno.writeTextFile(`${a}/.supa/ports`, "slot = 0\n");
+      await Deno.writeTextFile(`${home}/slots`, "aaa\t0\n");
       await Deno.writeTextFile(`${home}/supa.registry`, `aaa|${a}\nbbb|${b}\n`);
       const blocked = await runSupa(["ports", "bbb", "0"], home);
       ok(blocked.code === 1, `expected exit 1, got ${blocked.code}: ${blocked.err}`);
-      ok(/held by aaa/.test(blocked.err), blocked.err);
+      ok(/not free/.test(blocked.err), blocked.err);
       ok(
         (await Deno.readTextFile(`${b}/supabase/config.toml`)).includes("54321"),
         "config.toml must stay on the stock ports",
@@ -606,18 +605,17 @@ Deno.test("ports keeps a project's own remembered slot", async () => {
         const dir = await Deno.makeTempDir({ prefix: `supa-s${d}-` });
         dirs.push(dir);
         await Deno.mkdir(`${dir}/supabase`, { recursive: true });
-        await Deno.mkdir(`${dir}/.supa`, { recursive: true });
         await Deno.writeTextFile(
           `${dir}/supabase/config.toml`,
           `project_id = "p${d}"\n[api]\nport = 54321\n`,
         );
-        await Deno.writeTextFile(`${dir}/.supa/ports`, `slot = ${d}\n`);
         lines.push(`p${d}|${dir}`);
       }
       await Deno.writeTextFile(`${home}/supa.registry`, lines.join("\n") + "\n");
+      await Deno.writeTextFile(`${home}/slots`, "p0\t0\np1\t1\np2\t2\n");
       const r = await runSupa(["ports", "p2"], home);
       ok(r.code === 0, r.err);
-      ok((await Deno.readTextFile(`${dirs[2]}/.supa/ports`)).includes("slot = 2"), r.out);
+      ok((await Deno.readTextFile(`${home}/slots`)).includes("p2\t2"), r.out);
       ok((await Deno.readTextFile(`${dirs[2]}/supabase/config.toml`)).includes("54321"));
     } finally {
       for (const d of dirs) await Deno.remove(d, { recursive: true });
@@ -626,9 +624,10 @@ Deno.test("ports keeps a project's own remembered slot", async () => {
 });
 
 // Hand-set slot 0 must stay on auto-pick when free (auto-assignment still 1–9).
-Deno.test("ports refuses to rewrite a committed band", async () => {
+Deno.test("ports keeps a changed port and still assigns a slot for the rest", async () => {
   await withHome(async (home) => {
     const dir = await Deno.makeTempDir({ prefix: "supa-band-" });
+    const shim = await Deno.makeTempDir({ prefix: "supa-shim-" });
     try {
       await Deno.mkdir(`${dir}/supabase`, { recursive: true });
       await Deno.writeTextFile(
@@ -636,12 +635,19 @@ Deno.test("ports refuses to rewrite a committed band", async () => {
         `project_id = "band"\n[api]\nport = 54331\n`,
       );
       await Deno.writeTextFile(`${home}/supa.registry`, `band|${dir}\n`);
-      const r = await runSupa(["ports", "band", "4"], home);
-      ok(r.code === 1, r.err);
-      ok(/committed ports/.test(r.err), r.err);
+      const dk = Deno.build.os === "windows" ? `${shim}/docker.cmd` : `${shim}/docker`;
+      await Deno.writeTextFile(
+        dk,
+        Deno.build.os === "windows" ? "@echo off\r\nexit /b 0\r\n" : "#!/bin/sh\nexit 0\n",
+      );
+      if (Deno.build.os !== "windows") await Deno.chmod(dk, 0o755);
+      const r = await runSupa(["ports", "band", "4"], home, { pathPrefix: shim });
+      ok(r.code === 0, r.err);
       ok((await Deno.readTextFile(`${dir}/supabase/config.toml`)).includes("54331"));
+      ok((await Deno.readTextFile(`${home}/slots`)).includes("band\t4"));
     } finally {
       await Deno.remove(dir, { recursive: true });
+      await Deno.remove(shim, { recursive: true });
     }
   });
 });
@@ -656,8 +662,7 @@ Deno.test("add --init refuses a colliding --slot like ports", async () => {
         `${a}/supabase/config.toml`,
         `project_id = "aaa"\n[api]\nport = 54321\n[db]\nport = 54322\n`,
       );
-      await Deno.mkdir(`${a}/.supa`, { recursive: true });
-      await Deno.writeTextFile(`${a}/.supa/ports`, "slot = 3\n");
+      await Deno.writeTextFile(`${home}/slots`, "aaa\t3\n");
       // Pre-seed config so --init skips `supabase init` (not needed for this check).
       await Deno.mkdir(`${b}/supabase`, { recursive: true });
       await Deno.writeTextFile(
@@ -667,7 +672,7 @@ Deno.test("add --init refuses a colliding --slot like ports", async () => {
       await Deno.writeTextFile(`${home}/supa.registry`, `aaa|${a}\n`);
       const r = await runSupa(["add", "bbb", b, "--init", "--slot", "3"], home);
       ok(r.code === 1, `expected exit 1, got ${r.code}: ${r.err}`);
-      ok(/held by aaa/.test(r.err), r.err);
+      ok(/not free/.test(r.err), r.err);
       // Slot checks run before the registry write — no half-applied entry.
       ok(
         !(await Deno.readTextFile(`${home}/supa.registry`)).includes(`bbb|`),
@@ -729,7 +734,7 @@ Deno.test("add --init skips init when a nested monorepo config already exists", 
       );
       const nested = await Deno.readTextFile(`${root}/apps/web/supabase/config.toml`);
       ok(nested.includes("54321"), nested);
-      ok((await Deno.readTextFile(`${root}/apps/web/.supa/ports`)).includes("slot = 4"));
+      ok((await Deno.readTextFile(`${home}/slots`)).includes("web\t4"));
     } finally {
       await Deno.remove(root, { recursive: true });
     }
@@ -750,10 +755,9 @@ Deno.test("add --init without --slot keeps existing ports", async () => {
       const r = await runSupa(["add", "keep", proj, "--init"], home);
       ok(r.code === 0, r.err);
       ok(/already exists — skipping/.test(r.err), r.err);
-      ok(/existing ports kept/.test(r.out), r.out);
+      ok(/config.toml was not changed/.test(r.out), r.out);
       const cfg = await Deno.readTextFile(`${proj}/supabase/config.toml`);
       ok(cfg.includes("54371") && cfg.includes("54372"), cfg);
-      ok(!cfg.includes("54311"), "must not auto-reband to slot 1");
     } finally {
       await Deno.remove(proj, { recursive: true });
     }

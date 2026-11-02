@@ -6,6 +6,21 @@ All notable changes to supa are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [0.2.1] — 2026-11-02
+
+### Changed
+
+- Each machine chooses stock host ports when a stack starts and remembers the
+  slot in `~/.config/supa/slots`. A remembered slot is kept only while it is
+  still free. A port edited in `config.toml` stays as written; the other stock
+  ports are still assigned.
+- `max_active` and `ram_budget` both count every running Supabase stack.
+  Unmanaged stacks are named and are not stopped.
+- `up`, `restart`, and `switch` refuse when the same `project_id` is registered
+  on two paths.
+- Per-database limits, hooks, and env rename maps live in `.supa/limits`,
+  `.supa/hooks`, and `.supa/env.map`. The older filenames still work.
+
 ## [0.2.0] — 2026-11-01
 
 ### Added
@@ -323,6 +338,7 @@ Supabase stacks (one per project) on top of the official Supabase CLI.
   with checksum verification and a signed build-provenance attestation. Unit +
   CLI integration tests; CI runs fmt / lint / check / test on Linux and Windows.
 
+[0.2.1]: https://github.com/conanhazelnut/supa/releases/tag/v0.2.1
 [0.2.0]: https://github.com/conanhazelnut/supa/releases/tag/v0.2.0
 [0.1.6]: https://github.com/conanhazelnut/supa/releases/tag/v0.1.6
 [0.1.5]: https://github.com/conanhazelnut/supa/releases/tag/v0.1.5

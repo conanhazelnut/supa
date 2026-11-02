@@ -10,14 +10,14 @@ import {
   readHooks,
   readLimits,
   readMaxActive,
-  readSavedSlot,
+  readProjectSlot,
   rootOf,
 } from "./config.ts";
 import {
   apiPortMismatch,
   effectivePorts,
+  fixedKeys,
   parsePublishedPorts,
-  portMode,
   readHostPorts,
 } from "./ports.ts";
 import { exceedsMaxActive, foreignSlotHolders, uniqueNames } from "./parse.ts";
@@ -301,8 +301,8 @@ export async function startStack(
   const f = cfgFile(name);
   if (lbl && f && isFile(f)) {
     const found = readHostPorts(readTextFile(f));
-    const slot = readSavedSlot(wd);
-    if (portMode(found) === "auto" && typeof slot === "number") {
+    const slot = readProjectSlot(name);
+    if (!fixedKeys(found).has("api") && typeof slot === "number") {
       const ps = await runCapture("docker", [
         "ps",
         "--filter",
@@ -350,7 +350,12 @@ function printMaxActiveHelp(
 ): void {
   const from = source === "default" ? "" : `, from ${source}`;
   console.error(`supa: max-active limit reached (${max}${from}) — already running:`);
-  for (const l of running) console.error(`  - ${nameForLabel(l) ?? l} (${l})`);
+  for (const l of running) {
+    const nm = nameForLabel(l);
+    console.error(
+      nm ? `  - ${nm} (${l})` : `  - ${l} (not registered — supa will not stop it)`,
+    );
+  }
   console.error("");
   // The one-off hint must be copy-pasteable in the user's actual shell. In
   // PowerShell an env var set inline persists for the whole session (unlike the

@@ -19,10 +19,12 @@ import { configDir, configPath, readConfigKV, registryPath } from "./config.ts";
 import { handleMcpMessage, toolArgs } from "./mcp.ts";
 import {
   apiPortMismatch,
+  effectivePorts,
+  envForPorts,
   firstFreeSlot,
+  fixedKeys,
   parsePublishedPorts,
   portForSlot,
-  portMode,
   readHostPorts,
 } from "./ports.ts";
 import { ramDecision } from "./ram.ts";
@@ -751,10 +753,15 @@ Deno.test("uniqueNames keeps first occurrence order", () => {
   eq(uniqueNames([]), []);
   eq(uniqueNames(["x"]), ["x"]);
 });
-Deno.test("stock config is auto and a 543xx edit is a committed band", () => {
-  eq(portMode(readHostPorts("[api]\nport = 54321\n")), "auto");
-  eq(portMode(readHostPorts("[api]\nport = 54331\n")), "file");
-  eq(portMode(readHostPorts("# port = 54399\n[api]\nport = 54321\n")), "auto");
+Deno.test("only a changed port stays fixed; stock ports still follow the slot", () => {
+  const stock = readHostPorts("[api]\nport = 54321\n# port = 54399\n");
+  eq(fixedKeys(stock).size, 0);
+  eq(effectivePorts(stock, 0).api, 54421);
+  const studio = readHostPorts("[studio]\nport = 54333\n[api]\nport = 54321\n");
+  eq(effectivePorts(studio, 0).studio, 54333);
+  eq(effectivePorts(studio, 0).api, 54421);
+  eq(envForPorts(effectivePorts(studio, 0), studio).SUPABASE_STUDIO_PORT, undefined);
+  eq(envForPorts(effectivePorts(studio, 0), studio).SUPABASE_API_PORT, "54421");
   eq(portForSlot(21, 0), 54421);
   eq(portForSlot(22, 2), 54622);
   eq(firstFreeSlot(new Set([54421]), []), 1);
@@ -767,6 +774,10 @@ Deno.test("published port check ignores a shim with no host ports", () => {
       "web",
       54421,
     ) !== null,
+  );
+  eq(
+    apiPortMismatch(parsePublishedPorts("db\t0.0.0.0:54422->5432/tcp\tweb\n"), "web", 54421),
+    null,
   );
 });
 Deno.test("destructive MCP tools refuse without confirm", async () => {

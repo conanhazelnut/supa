@@ -10,13 +10,13 @@ file is for.
 
 ## Scheme
 
-Stock `config.toml` ports (the `54321` set, including `inspector_port = 8083`)
-are not rewritten. `supa` remembers a slot in `<project>/.supa/ports` and passes
-it to the Supabase CLI as environment variables. Slot `0` is API `54421`,
-Postgres `54422`, Studio `54423`; each next slot adds `100`. Slots run `0`–`111`.
+Stock host ports stay in `config.toml`. Each machine picks a free slot when
+the stack starts (`54421 + slot × 100`, slots `0`–`111`) and remembers it in
+`~/.config/supa/slots`. That file is not part of the project. The same numbers
+are written to `supabase/.env.local` for a hand-run CLI; gitignore that file.
 
-A host port that was edited into `54300`–`54399`, or any other non-stock value,
-is a committed band. `supa` uses the file and does not overlay it.
+A host port you change away from the official default is used as written.
+The other stock ports on that file are still assigned on this machine.
 
 The service offsets inside a slot match the official template:
 

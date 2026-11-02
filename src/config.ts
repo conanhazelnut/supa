@@ -27,14 +27,7 @@ import {
   rebandText,
   SAFE_NAME,
 } from "./parse.ts";
-import {
-  effectivePorts,
-  envForPorts,
-  parseSlotText,
-  portMode,
-  readHostPorts,
-  slotFileText,
-} from "./ports.ts";
+import { effectivePorts, envForPorts, parseSlotText, readHostPorts, SLOT_MAX } from "./ports.ts";
 
 export type { Hooks, Limits, Project };
 
@@ -270,42 +263,77 @@ export function nextFreeSlot(
   }
   return null;
 }
+function projectFile(wd: string, modern: string, legacy: string): string | null {
+  const next = join(wd, ".supa", modern);
+  if (isFile(next)) return next;
+  const old = join(wd, legacy);
+  return isFile(old) ? old : null;
+}
 export function readEnvMap(cfgDirPath: string): Array<{ app: string; native: string }> {
-  const mapPath = join(cfgDirPath, "supa.env.map");
-  if (!isFile(mapPath)) return [];
+  const mapPath = projectFile(cfgDirPath, "env.map", "supa.env.map");
+  if (!mapPath) return [];
   return parseEnvMap(readTextFile(mapPath));
 }
 export function readHooks(cfgDirPath: string): Hooks {
-  const p = join(cfgDirPath, "supa.hooks");
-  return isFile(p) ? parseHooks(readTextFile(p)) : {};
+  const p = projectFile(cfgDirPath, "hooks", "supa.hooks");
+  return p ? parseHooks(readTextFile(p)) : {};
 }
 export function readLimits(cfgDirPath: string): Limits {
-  const p = join(cfgDirPath, "supa.limits");
-  return isFile(p) ? parseLimits(readTextFile(p)) : {};
+  const p = projectFile(cfgDirPath, "limits", "supa.limits");
+  return p ? parseLimits(readTextFile(p)) : {};
 }
-export function slotPath(wd: string): string {
-  return join(wd, ".supa", "ports");
+/** This machine's slot memory. Not in the project, and not committed. */
+export function slotsPath(): string {
+  return join(configDir(), "slots");
 }
-export function readSavedSlot(wd: string): number | "missing" | "invalid" {
-  const p = slotPath(wd);
-  if (!isFile(p)) return "missing";
-  return parseSlotText(readTextFile(p));
+export function readSlotMap(): Record<string, number> {
+  const path = slotsPath();
+  if (!isFile(path)) return {};
+  const out: Record<string, number> = {};
+  for (const raw of readTextFile(path).split(/\r?\n/)) {
+    const line = raw.trim();
+    if (line === "" || line.startsWith("#")) continue;
+    const tab = line.lastIndexOf("\t");
+    if (tab < 1) continue;
+    const n = Number(line.slice(tab + 1));
+    if (Number.isInteger(n) && n >= 0 && n <= SLOT_MAX) out[line.slice(0, tab)] = n;
+  }
+  return out;
 }
-export function writeSavedSlot(wd: string, slot: number): void {
-  const p = slotPath(wd);
+export function writeProjectSlot(key: string, slot: number): void {
+  const map = readSlotMap();
+  map[key] = slot;
+  const path = slotsPath();
   try {
-    Deno.mkdirSync(parentDir(p), { recursive: true });
+    Deno.mkdirSync(parentDir(path), { recursive: true });
   } catch { /* exists */ }
-  Deno.writeTextFileSync(p, slotFileText(slot));
+  const lines = ["# supa slots for this machine only. Do not copy between computers."];
+  for (const [k, v] of Object.entries(map)) lines.push(`${k}\t${v}`);
+  Deno.writeTextFileSync(path, lines.join("\n") + "\n");
 }
-/** Env that makes `supabase` use the remembered slot. Empty when the file owns the ports. */
+export function slotKey(name: string): string | null {
+  return labelOf(name) ?? cfgDir(name);
+}
+/** Global memory, else a leftover `db/<id>/.supa/ports` from older supa. */
+export function readProjectSlot(name: string): number | "missing" | "invalid" {
+  const key = slotKey(name);
+  if (key) {
+    const saved = readSlotMap()[key];
+    if (saved !== undefined) return saved;
+  }
+  const wd = cfgDir(name);
+  if (!wd) return "missing";
+  const legacy = join(wd, ".supa", "ports");
+  if (!isFile(legacy)) return "missing";
+  return parseSlotText(readTextFile(legacy));
+}
+/** Env that makes `supabase` use this machine's slot. Fixed toml ports are omitted. */
 export function portOverlay(name: string): Record<string, string> {
   const wd = cfgDir(name);
   const f = cfgFile(name);
   if (!wd || !f || !isFile(f)) return {};
   const found = readHostPorts(readTextFile(f));
-  if (portMode(found) !== "auto") return {};
-  const slot = readSavedSlot(wd);
+  const slot = readProjectSlot(name);
   if (typeof slot !== "number") return {};
   return envForPorts(effectivePorts(found, slot), found);
 }

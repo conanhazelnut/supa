@@ -116,39 +116,39 @@ path). `supa config` prints exactly what it resolved.
 Same binary, same commands on every OS (`supa` on macOS/Linux, `supa.exe` /
 `supa` on Windows). Aliases in parentheses.
 
-| Command                              | Does                                                                                                         |
-| ------------------------------------ | ------------------------------------------------------------------------------------------------------------ |
-| `supa ls [--json]` (`list`)          | list projects, docker label, live ports, up/down status                                                      |
-| `supa up <p...>` (`start`)           | start stack(s) — refuses past the `max_active` limit. `--exclude` skips named containers for this start only |
-| `supa down <p...>` (`stop`)          | stop one or more stacks (`--all` for every registered)                                                       |
-| `supa restart <p...>`                | stop + start a stack                                                                                         |
-| `supa switch <p>` (`only`)           | stop all others, run only `<p>`                                                                              |
-| `supa destroy <p> [--yes]`           | stop + **DELETE** a stack's data (containers + volumes)                                                      |
-| `supa rotate <p> [--yes]`            | new JWT signing key + restart (invalidates tokens)                                                           |
-| `supa backup <p> [flags]`            | dump the local DB to a timestamped `.sql` (see below)                                                        |
-| `supa restore <p> <file>\|--latest`  | load a dump into the live DB — atomic, with a safety pre-dump                                                |
-| `supa pg-upgrade <p> --to <ver>`     | Postgres major upgrade: snapshot → recreate → restore                                                        |
-| `supa upgrade [--check]`             | update **supa itself** from GitHub Releases (checksum-verified)                                              |
-| `supa status [--json]` (`ps`)        | raw docker view, grouped by project                                                                          |
-| `supa stats`                         | CPU/MEM per container + per-stack & total RAM (vs `ram_budget`)                                              |
-| `supa limit <p>`                     | apply `supa.limits` (memory/cpus caps) to a running stack                                                    |
+| Command                                | Does                                                                                                         |
+| -------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `supa ls [--json]` (`list`)            | list projects, docker label, live ports, up/down status                                                      |
+| `supa up <p...>` (`start`)             | start stack(s) — refuses past the `max_active` limit. `--exclude` skips named containers for this start only |
+| `supa down <p...>` (`stop`)            | stop one or more stacks (`--all` for every registered)                                                       |
+| `supa restart <p...>`                  | stop + start a stack                                                                                         |
+| `supa switch <p>` (`only`)             | stop all others, run only `<p>`                                                                              |
+| `supa destroy <p> [--yes]`             | stop + **DELETE** a stack's data (containers + volumes)                                                      |
+| `supa rotate <p> [--yes]`              | new JWT signing key + restart (invalidates tokens)                                                           |
+| `supa backup <p> [flags]`              | dump the local DB to a timestamped `.sql` (see below)                                                        |
+| `supa restore <p> <file>\|--latest`    | load a dump into the live DB — atomic, with a safety pre-dump                                                |
+| `supa pg-upgrade <p> --to <ver>`       | Postgres major upgrade: snapshot → recreate → restore                                                        |
+| `supa upgrade [--check]`               | update **supa itself** from GitHub Releases (checksum-verified)                                              |
+| `supa status [--json]` (`ps`)          | raw docker view, grouped by project                                                                          |
+| `supa stats`                           | CPU/MEM per container + per-stack & total RAM (vs `ram_budget`)                                              |
+| `supa limit <p>`                       | apply `supa.limits` (memory/cpus caps) to a running stack                                                    |
 | `supa logs <p> [svc] [--since t] [-f]` | container logs, including a stopped stack (no `svc` → list services)                                         |
-| `supa studio <p>`                    | open that project's Studio in the browser when the stack is up                                               |
-| `supa env <p> [--json] [--write [f]]` | print keys/URLs, or merge them into a `.env` file                                                            |
-| `supa add <name> <path> [--init]`    | register a project (`--init`: `supabase init` + assign ports)                                                |
-| `supa rm <name>`                     | unregister a project                                                                                         |
-| `supa park [<dir>]` / `unpark`       | opt-in auto-discovery of supabase projects in a directory                                                    |
-| `supa ports <name> [slot]`           | move an auto slot (`54421 + slot×100`). Does not rewrite `config.toml`                                       |
-| `supa doctor`                        | preflight: docker, CLI, registry, ports, config                                                              |
-| `supa prune [--images]`              | reclaim docker disk — Supabase images only (others reported)                                                 |
-| `supa config`                        | show `max_active`, `ram_budget` + resolved paths                                                             |
-| `supa config max-active <n>`         | set how many stacks may run at once (persists)                                                               |
-| `supa config ram-budget <gb>`        | refuse `up` / `restart` / `switch` when the estimate would exceed this                                       |
-| `supa config backup-dir <path>`      | where `supa backup` writes dumps (default `<project>/backups/`)                                              |
-| `supa completion bash\|zsh\|pwsh`    | print a tab-completion script (verbs + project names)                                                        |
-| `supa version`                       | print the supa version (`--version` / `-V` too)                                                              |
-| `supa mcp`                           | local stdio MCP server for an editor to launch                                                               |
-| `supa help [command]`                | usage, or detailed help for one command (`<cmd> --help` too)                                                 |
+| `supa studio <p>`                      | open that project's Studio in the browser when the stack is up                                               |
+| `supa env <p> [--json] [--write [f]]`  | print keys/URLs, or merge them into a `.env` file                                                            |
+| `supa add <name> <path> [--init]`      | register a project (`--init`: `supabase init` + assign ports)                                                |
+| `supa rm <name>`                       | unregister a project                                                                                         |
+| `supa park [<dir>]` / `unpark`         | opt-in auto-discovery of supabase projects in a directory                                                    |
+| `supa ports <name> [slot]`             | move an auto slot (`54421 + slot×100`). Does not rewrite `config.toml`                                       |
+| `supa doctor`                          | preflight: docker, CLI, registry, ports, config                                                              |
+| `supa prune [--images]`                | reclaim docker disk — Supabase images only (others reported)                                                 |
+| `supa config`                          | show `max_active`, `ram_budget` + resolved paths                                                             |
+| `supa config max-active <n>`           | set how many stacks may run at once (persists)                                                               |
+| `supa config ram-budget <gb>`          | refuse `up` / `restart` / `switch` when the estimate would exceed this                                       |
+| `supa config backup-dir <path>`        | where `supa backup` writes dumps (default `<project>/backups/`)                                              |
+| `supa completion bash\|zsh\|pwsh`      | print a tab-completion script (verbs + project names)                                                        |
+| `supa version`                         | print the supa version (`--version` / `-V` too)                                                              |
+| `supa mcp`                             | local stdio MCP server for an editor to launch                                                               |
+| `supa help [command]`                  | usage, or detailed help for one command (`<cmd> --help` too)                                                 |
 
 **Scripting:** `ls`, `status`, `config`, `doctor`, `stats`, `env`, and `up`
 take `--json`. `ls --json` is `{ projects, unmanaged }`. That output is the
@@ -166,14 +166,15 @@ stable machine interface. Parse it, never the human tables.
   invalid. Same typed-name confirmation as `destroy`. **Gitignore the key file** —
   it holds the private signing key.
 - **`add --init`** runs `supabase init` in the path (skipped if a config already
-  exists). A stock config gets a free slot in `.supa/ports` (or `--slot N`,
-  `0`–`111`). A config that already changed a host port keeps that file.
+  exists). On this machine, stock host ports get a free slot (or `--slot N`,
+  `0`–`111`), remembered in `~/.config/supa/slots`. A port you changed in
+  `config.toml` stays as written; the other stock ports are still assigned.
 - **`env --write`** merges `supabase status -o env` into a dotenv file (default
   `<config-dir>/.env.local`): updates existing keys in place, keeps other lines,
   appends new ones, masks secrets in the console. By default it writes Supabase's
   **native** names (`API_URL`, `ANON_KEY`, `SERVICE_ROLE_KEY`, `DB_URL`, …).
-  To rename them for your app, drop a **`supa.env.map`** in the project workdir
-  (beside `supabase/`):
+  To rename them for your app, drop **`.supa/env.map`** in the project workdir
+  (beside `supabase/`, or the older `supa.env.map`):
   ```
   # APP_NAME = NATIVE_NAME   (one native may feed several app names)
   SUPABASE_URL              = API_URL
@@ -186,9 +187,13 @@ stable machine interface. Parse it, never the human tables.
   With no map, `--write` uses a default rename table for `ANON_KEY`,
   `SERVICE_ROLE_KEY`, `PUBLISHABLE_KEY`, and `SECRET_KEY`. The map holds names
   only — no secrets — so it's safe to commit in the project.
-- **`ports`** moves an auto-assigned slot. It does not rewrite `config.toml`.
-  A file that already has a non-stock host port is left alone. Run
-  `supa restart` after. A slot whose ports are already held is refused.
+  Gitignore every `.env.local` (app keys, and `supabase/.env.local` for this
+  machine's ports). Also gitignore `supabase/signing_keys.json`,
+  `supabase/.temp/`, and `backups/`. Commit `.supa/limits`, `.supa/hooks`, and
+  `.supa/env.map`.
+- **`ports`** moves this machine's slot. It does not rewrite `config.toml`.
+  A port you already changed in that file stays. Run `supa restart` after.
+  If the slot is not free, supa picks another.
 - **`backup`** dumps the **local** DB via `supabase db dump --local` (the stack
   must be **up**). Default is a **full** snapshot — roles + schema + data,
   concatenated in restore order into one `<name>_<YYYY-MM-DD_HHMMSS>.sql`. Flags:
@@ -244,10 +249,11 @@ stable machine interface. Parse it, never the human tables.
   version exists. supa never checks for updates on its own — this command is its
   only network call, and only when you run it.
 
-### Per-project hooks (`supa.hooks`)
+### Per-project hooks (`.supa/hooks`)
 
-Drop a `supa.hooks` in the project workdir — beside the `supabase/` directory
-(same place as `supa.env.map` / `supa.limits`) — to let
+Drop `.supa/hooks` in the project workdir — beside the `supabase/` directory
+(same place as `.supa/env.map` / `.supa/limits`; the older `supa.hooks` name
+still works) — to let
 a project declare its own lifecycle steps — supa owns the flow, the project owns the
 specifics:
 
@@ -269,11 +275,11 @@ aborts the operation. A failing **post**-hook (`up.post` / `down.post`) only
 warns — the start/stop already succeeded, so aborting would look like a failed
 lifecycle step and could leave a `down --all` / `switch` batch half-done.
 
-### Resource limits (`supa.limits`) — capping RAM/CPU per stack
+### Resource limits (`.supa/limits`) — capping RAM/CPU per stack
 
 By default a Supabase container has **no memory limit** — it can balloon up to the
-whole Docker VM (and past your physical RAM into swap). On a RAM-bound host, drop a
-`supa.limits` in the project workdir (beside `supabase/`) to cap each container. supa applies it via
+whole Docker VM (and past your physical RAM into swap). On a RAM-bound host, drop
+`.supa/limits` in the project workdir (beside `supabase/`) to cap each container. supa applies it via
 `docker update` right after `supa up` (and `supa limit <p>` re-applies to a running
 stack). See [`examples/supa.limits.example`](../examples/supa.limits.example):
 
@@ -338,11 +344,13 @@ For a registered `name`, on every call `supa`:
    to the CLI as `--workdir`.
 2. **Reads the Docker label** — `project_id` in `config.toml`. Names the
    containers (`supabase_*_<label>`) and what `docker ps` reports.
-3. **Reads live host ports** — a stock file uses the slot in `.supa/ports`
-   (`54421 + slot×100`). A file with a non-stock host port uses that file.
+3. **Reads live host ports** — stock ports use this machine's slot
+   (`~/.config/supa/slots`, `54421 + slot×100`). A port changed in
+   `config.toml` is used as written.
 
-Change a committed port in `config.toml` and `supa ls` reflects it. An auto
-slot changes only when `supa ports` writes `.supa/ports`.
+`supa ls` shows the ports this machine would use. A changed port in
+`config.toml` shows up immediately. The slot is chosen again when the
+remembered one is no longer free.
 
 ---
 
