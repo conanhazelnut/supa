@@ -1,4 +1,4 @@
-# supa.limits — per-container resource caps for one stack.
+# .supa/limits — per-container resource caps for one stack.
 # Put it next to your project's supabase/config.toml. Applied on `supa up`;
 # re-apply to a running stack with `supa limit <project>`.
 #

@@ -189,7 +189,7 @@ export function setConfigKey(key: string, val: string): void {
   const lines = [
     "# supa config — written by `supa config`",
     "# max_active: how many stacks may run at once (default 1).",
-    "# ram_budget_gb: warn when total running-stack RAM exceeds this (optional).",
+    "# ram_budget_gb: refuse up/restart/switch when the estimate would exceed this (optional).",
     "# backup_dir: where `supa backup` writes dumps (default <project>/backups/).",
     "# Per-shell overrides: SUPA_MAX_ACTIVE, SUPA_RAM_BUDGET, SUPA_BACKUP_DIR, SUPA_ALLOW_MULTI=1.",
   ];

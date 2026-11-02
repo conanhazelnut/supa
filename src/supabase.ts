@@ -317,7 +317,7 @@ export async function startStack(
   }
   if (lbl) await pinNoRestart(lbl);
   const n = await applyLimits(name);
-  if (n) say(`  applied resource limits to ${n} container(s)  (supa.limits)`);
+  if (n) say(`  applied resource limits to ${n} container(s)  (.supa/limits)`);
   if (hooks.upPost) await runHook("up.post", hooks.upPost, wd, postHint);
 }
 export async function stopStack(name: string): Promise<void> {
@@ -365,7 +365,7 @@ function printMaxActiveHelp(
     ? `$env:SUPA_MAX_ACTIVE=${n}; supa up ${want}; rm env:SUPA_MAX_ACTIVE`
     : `SUPA_MAX_ACTIVE=${n} supa up ${want}`;
   console.error(`  free a slot:       supa down <name>`);
-  console.error(`  swap to '${want}':   supa switch ${want}   (stops others, runs only this)`);
+  console.error(`  swap to '${want}':   supa switch ${want}   (stops other registered stacks)`);
   console.error(`  raise the limit:   supa config max-active ${n}`);
   console.error(`  or one-off:        ${oneOff}`);
   Deno.exit(1);

@@ -21,8 +21,9 @@ nothing installed beyond **Docker** and the **Supabase CLI**.
 Running several local Supabase projects means juggling ports, Docker labels, and
 which stack is up. The Supabase CLI gives you the primitives (`--workdir`,
 per-project `project_id`) but no manager on top. supa is that manager — and
-deliberately a _thin_ one: it wraps the CLI instead of replacing it, and derives
-everything it can from each project's `config.toml` so nothing drifts.
+deliberately a _thin_ one: it wraps the CLI instead of replacing it. Stock
+host ports stay in `config.toml`; each machine assigns the ports it actually
+binds.
 
 ## Install
 
@@ -54,7 +55,7 @@ For contributors, or platforms without a prebuilt binary. Needs
 
 ```sh
 git clone https://github.com/conanhazelnut/supa.git && cd supa
-deno task build                            # → dist/supa (+ dist/supa.exe), any OS
+deno task build                            # macOS/Linux: dist/supa and dist/supa.exe; Windows: dist/supa.exe
 ln -sf "$PWD/dist/supa" ~/.local/bin/supa  # put it on PATH (macOS/Linux)
 ```
 
@@ -71,7 +72,7 @@ essentials:
 ```sh
 supa ls                     # projects, ports, what's UP
 supa up web                 # start one (capped by max-active, default 1)
-supa switch api             # stop others, run only this
+supa switch api             # stop other registered stacks, run only this
 supa down web               # stop it
 supa config max-active 2    # allow two at once
 supa stats                  # CPU/RAM per stack + total
@@ -100,12 +101,12 @@ to confirm.
 
 ## How it works
 
-- The **registry** (`supa.registry`, `name|path` per line) is the only thing you
+- The **registry** (`supa.registry`, `name|path` per line) is the list you
   maintain. The Docker label comes from `config.toml`. Each machine remembers
   its own slot in `~/.config/supa/slots`. A port you changed is read from the file.
 - **Config** lives in `SUPA_HOME` (default `~/.config/supa`, `%APPDATA%\supa` on
-  Windows): `supa.registry` + `supa.config` (`max_active`, `ram_budget_gb`,
-  `backup_dir`).
+  Windows): `supa.registry`, `supa.config` (`max_active`, `ram_budget_gb`,
+  `backup_dir`), and `slots`.
 - Which services run, the Postgres version, and image versions live in each
   project's `config.toml` — supa reads it live; edit it, then `supa restart`.
 - **Only Supabase stacks are touched.** Every container / volume / image

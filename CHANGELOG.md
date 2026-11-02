@@ -6,6 +6,13 @@ All notable changes to supa are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [0.2.3] — 2026-11-02
+
+### Changed
+
+- Guides, help text, and the registry example now match per-machine port
+  slots, the pg-upgrade volume copy, and the `.supa/` filenames.
+
 ## [0.2.2] — 2026-11-02
 
 ### Fixed
@@ -345,6 +352,7 @@ Supabase stacks (one per project) on top of the official Supabase CLI.
   with checksum verification and a signed build-provenance attestation. Unit +
   CLI integration tests; CI runs fmt / lint / check / test on Linux and Windows.
 
+[0.2.3]: https://github.com/conanhazelnut/supa/releases/tag/v0.2.3
 [0.2.2]: https://github.com/conanhazelnut/supa/releases/tag/v0.2.2
 [0.2.1]: https://github.com/conanhazelnut/supa/releases/tag/v0.2.1
 [0.2.0]: https://github.com/conanhazelnut/supa/releases/tag/v0.2.0

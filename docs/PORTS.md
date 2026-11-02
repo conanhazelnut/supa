@@ -1,19 +1,16 @@
 # Local Supabase — port scheme
 
 Each project is one local Supabase stack managed by the **Supabase CLI**.
-Containers, volumes and networks are isolated automatically by `project_id`; the
-**only** thing you coordinate by hand is the **host port band** — that's what this
-file is for.
-
-`supa` reads whatever each `config.toml` declares, so the only hard rule is
-**don't overlap**. A simple convention keeps that easy.
+Containers, volumes and networks are isolated by `project_id`. Stock host
+ports are not something you copy into git: this machine assigns them.
 
 ## Scheme
 
-Stock host ports stay in `config.toml`. Each machine picks a free slot when
-the stack starts (`54421 + slot × 100`, slots `0`–`111`) and remembers it in
-`~/.config/supa/slots`. That file is not part of the project. The same numbers
-are written to `supabase/.env.local` for a hand-run CLI; gitignore that file.
+Stock host ports stay in `config.toml`. This machine picks a free slot on
+`supa add --init`, `supa up`, or `supa ports` (`54421 + slot × 100`, slots
+`0`–`111`) and remembers it in `~/.config/supa/slots`. That file is not part of
+the project. The same numbers are written to `supabase/.env.local` for a
+hand-run CLI; gitignore that file.
 
 A host port you change away from the official default is used as written.
 The other stock ports on that file are still assigned on this machine.
@@ -25,7 +22,9 @@ The service offsets inside a slot match the official template:
 | `1`           | API gateway (Kong)     |
 | `2`           | Postgres (direct)      |
 | `3`           | Studio                 |
-| `4`           | Inbucket / Mailpit     |
+| `4`           | local SMTP (Mailpit)   |
+| `5`           | SMTP (only if set)     |
+| `6`           | POP3 (only if set)     |
 | `7`           | Analytics              |
 | `0`           | DB shadow              |
 | `8`           | Edge runtime inspector |
@@ -63,14 +62,15 @@ enabled = false
 enabled = false
 ```
 
-`supa stats` shows per-stack RAM; `supa config ram-budget <gb>` warns when the
-running total exceeds your budget.
+`supa stats` shows per-stack RAM. `supa config ram-budget <gb>` makes `up`,
+`restart`, and `switch` refuse when the estimate would pass it. `supa stats`
+still prints the running total against that budget.
 
 ## Adding a project
 
-1. Pick a free slot (see the table); `supa doctor` will flag overlaps.
-2. `supa add <name> <path> --init` — registers, runs `supabase init`, and assigns
-   a free band. (Or `supa add <name> <path>` then `supa ports <name>` for a repo
-   that already has `supabase/`.)
-3. Edit that `config.toml` to enable only the services you use.
-4. `supa up <name>` — then `supa ls` to confirm the derived label + ports.
+1. `supa add <name> <path> --init` — registers, runs `supabase init`, and
+   assigns a free slot on this machine. Stock ports stay in `config.toml`.
+   (`supa add` without `--init` waits until `supa up` or `supa ports`.)
+2. Edit that `config.toml` to enable only the services you use. Change a host
+   port only when that one service must keep a fixed number.
+3. `supa up <name>` — then `supa ls` to confirm the label and this machine's ports.

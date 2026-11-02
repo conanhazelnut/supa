@@ -11,10 +11,12 @@ it that way are very welcome.
   thin coordinator, not a container runtime.
 - **Cross-platform.** It must work on macOS, Linux, and Windows. Use forward
   slashes, avoid shelling through a shell (always `new Deno.Command(cmd, {args})`,
-  never `sh -c`), and don't assume a Unix-only path layout.
-- **Derive, don't store.** Docker labels and ports come from each project's
-  `supabase/config.toml` at call time. supa's own state is just the registry
-  (`name|path`) and a tiny config (`max_active`, `ram_budget_gb`).
+  never `sh -c` except for a project's own hooks), and don't assume a Unix-only path layout.
+- **Derive labels, assign ports per machine.** The Docker label is
+  `project_id` in `config.toml`. Stock host ports are assigned on this machine
+  and remembered in `~/.config/supa/slots`. supa's shared state is the registry
+  (`name|path`), `supa.config` (`max_active`, `ram_budget_gb`, `backup_dir`),
+  and that slot file.
 - **Pure logic is tested.** Parsing/formatting functions are exported and covered
   in `src/lib_test.ts` (unit) and `cli_test.ts` (integration). Add a test with any
   logic change.
@@ -32,9 +34,10 @@ deno task build         # compile local binaries into dist/
 ```
 
 **The gate is a local pre-push hook** (`.githooks/pre-push`): `deno task hooks`
-installs it once, then every `git push` runs `deno task ok` + `shellcheck` and
-blocks if anything fails. GitHub Actions CI (`.github/workflows/ci.yml`) runs
-the same checks on every push and PR, on both Linux and Windows.
+installs it once, then every `git push` runs `deno task ok`, plus `shellcheck`
+when that program is installed. GitHub Actions (`.github/workflows/ci.yml`) runs
+fmt, lint, type-check, and tests on Linux, macOS, and Windows. `shellcheck`
+runs on Linux; PSScriptAnalyzer runs on Windows.
 
 ## Pull requests
 

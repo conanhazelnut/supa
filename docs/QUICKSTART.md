@@ -1,6 +1,6 @@
 # Quick start — zero to a running stack in ~10 minutes
 
-supa has ~25 commands, but your first day needs six. This walkthrough takes you
+supa has a short command list, but your first day needs six. This walkthrough takes you
 from nothing to one running Supabase stack, with expected output at each step so
 you know it worked. Everything else lives in `supa help` and the
 [full guide](./SUPA.md).
@@ -44,7 +44,10 @@ supa doctor
   ✓ supabase CLI         2.30.4
   ✓ registry             /Users/you/.config/supa/supa.registry
   ✗ projects registered  0
+  ✓ registry names valid
+  ✓ registry paths absolute
   ✓ no port collisions
+  ✓ no duplicate project_id labels
   · max_active = 1 (default)
 ```
 
@@ -60,10 +63,10 @@ The registry maps a friendly name → a project's repo root. Pick whichever fits
 # a) You already have a project with supabase/config.toml in it:
 supa add web ~/code/web
 
-# b) Brand new — scaffold `supabase init` and auto-assign a free port band:
+# b) Brand new — scaffold `supabase init` and assign a free slot on this machine:
 supa add myapp ~/code/myapp --init
 
-# c) A whole directory of projects at once (auto-discovery):
+# c) Every immediate subdirectory that already has supabase/config.toml:
 supa park ~/code
 ```
 
@@ -88,12 +91,13 @@ supa ls
 
 ```text
 NAME     LABEL     API     DB      STUDIO  STATUS  ROOT
-api      api       54331   54332   54333   down    /Users/you/code/api
-web      web       54321   54322   54323   UP      /Users/you/code/web
+api      api       54521   54522   54523   down    /Users/you/code/api
+web      web       54421   54422   54423   UP      /Users/you/code/web
 ```
 
-Open Studio at `http://localhost:<STUDIO port>` — here `54323`. The port digits
-follow one scheme, `543<slot><service>` (see [PORTS.md](./PORTS.md)).
+Open Studio at `http://127.0.0.1:<STUDIO port>` — here `54423`. Those numbers
+are this machine's slot (`54421 + slot×100`), not the `54321` written in
+`config.toml`. See [PORTS.md](./PORTS.md).
 
 ## 6 · Wire your app to it
 
@@ -105,15 +109,15 @@ supa env web --write    # merge them into the project's .env.local
 ## Daily driving
 
 ```sh
-supa switch api      # stop everything else, run only this one
-supa down web        # stop a stack (down --all for everything)
+supa switch api      # stop other registered stacks, run only this one
+supa down web        # stop a stack (down --all stops every registered one)
 supa stats           # CPU/RAM per stack + total
 supa logs web db -f  # follow one service's logs
 ```
 
 ## Where to go next
 
-- `supa help` / `supa help <command>` — the full 25-command reference.
+- `supa help` / `supa help <command>` — the command reference.
 - `supa completion bash|zsh|pwsh` — tab-completion, including project names.
 - **[SUPA.md](./SUPA.md)** — the mental model, backups/restore, Postgres
   upgrades, resource limits, hooks, troubleshooting.

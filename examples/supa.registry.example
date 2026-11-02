@@ -5,7 +5,8 @@
 #   name — the alias you type:  supa up <name>
 #          letters/digits/._- only; other names are ignored (`supa doctor` lists them)
 #   path — the repo root. supa finds supabase/config.toml under it (root,
-#          apps/<x>/, or examples/<x>/) and reads its label + ports live.
+#          apps/<x>/, or examples/<x>/). The Docker label is project_id in that
+#          file. Stock host ports are assigned on this machine.
 #
 # Paths: leading ~ = home dir; forward slashes on Windows (C:/code/web);
 # absolute paths work. `supa add` / `supa park` store paths absolute.

@@ -654,13 +654,16 @@ export async function cmdEnv(rest: string[]): Promise<void> {
   const target = args[1] ?? join(wd, ".env.local");
   const fileMap = readEnvMap(wd);
   const envMap = fileMap.length ? fileMap : DEFAULT_ENV_MAP;
+  const mapPath = isFile(join(wd, ".supa", "env.map"))
+    ? join(wd, ".supa", "env.map")
+    : join(wd, "supa.env.map");
   let incoming = out;
   const applied = applyEnvMap(out, envMap);
   incoming = applied.incoming;
   if (applied.missing.length) {
     console.error(
       `  warning: ${
-        fileMap.length ? "supa.env.map" : "default env map"
+        fileMap.length ? "env map" : "default env map"
       } references keys not in supabase output: ${applied.missing.join(", ")}`,
     );
   }
@@ -672,7 +675,7 @@ export async function cmdEnv(rest: string[]): Promise<void> {
   for (const k of keys) console.log(`  ${k}=${maskSecret(k, map[k])}`);
   console.log(
     fileMap.length
-      ? `  mapped via ${join(wd, "supa.env.map")}`
+      ? `  mapped via ${mapPath}`
       : `  mapped via the default rename table (anon/service_role and publishable/secret)`,
   );
 }
@@ -1981,7 +1984,7 @@ export async function cmdSelfUpdate(rest: string[]): Promise<void> {
 }
 export async function cmdLimit(rest: string[]): Promise<void> {
   if (rest.length !== 1) {
-    die("usage: supa limit <project>   (apply supa.limits to the running stack now)");
+    die("usage: supa limit <project>   (apply .supa/limits to the running stack now)");
   }
   const p = rest[0];
   requireProject(p);
@@ -2194,7 +2197,7 @@ const HELP_TOPICS: Record<string, string> = {
   up: `supa up <project...> [--exclude <containers>]   (alias: start)
 Start one or more stacks via 'supabase start'. Refuses past the max-active
 limit (default 1) — raise it: supa config max-active <n>. Runs the project's
-up.pre / up.post hooks (supa.hooks) and applies supa.limits caps if present.
+up.pre / up.post hooks (.supa/hooks; older supa.hooks still read) and applies .supa/limits caps if present.
 --exclude (or -x) is this start only — it is not written to config.toml.
 Names are the CLI's container names (studio, mailpit, gotrue, …), comma-separated.
 The database cannot be excluded. The next up without the flag follows config.toml.`,
@@ -2246,7 +2249,7 @@ this command is the only network call, and only when you run it.
   env: `supa env <project> [--json] [--write [file]]
 Print the stack's keys/URLs, or --write: merge them into a dotenv file
 (default <config-dir>/.env.local) — updates keys in place, keeps other
-lines. Without a supa.env.map, --write renames both the legacy JWT keys and
+lines. Without .supa/env.map (older supa.env.map still read), --write renames both the legacy JWT keys and
 the publishable/secret keys. A project file replaces that default.`,
   add: `supa add <name> <path> [--init] [--slot 0-111]
 Register a project (path is stored absolute). --init runs 'supabase init' when
@@ -2261,15 +2264,17 @@ Subdirs without Supabase are ignored; explicit 'supa add' entries win.
 'supa park' alone lists parked dirs. Stored as a '*|<dir>' registry line.`,
   ports: `supa ports <name> [slot 0-111]
 Move an auto-assigned slot (54421 + slot*100). Does not rewrite config.toml.
-Refuses when the file already has a committed port band. Apply with:
+Refuses only when every host port in the file is already off the official
+default. Apply with:
 supa restart`,
   logs: `supa logs <project> [service] [--since <time>] [-f]
 Show one service's container logs (last 200 lines). --since is passed to
 docker logs. Stopped containers are included. -f follows only while the
 container is running. Without a service, lists the stack's services.`,
   limit: `supa limit <project>
-Apply the project's supa.limits (memory/cpus caps per container) to the
-running stack now. Happens automatically on 'supa up'.`,
+Apply the project's .supa/limits (memory/cpus caps per container; older
+supa.limits still read) to the running stack now. Happens automatically on
+'supa up'.`,
   prune: `supa prune [--images] [--dry-run]
 Reclaim docker disk WITHIN supa's scope — Supabase images only. Other
 projects' images (a php service, your own builds) are reported, never
@@ -2280,7 +2285,7 @@ stack's data with 'supa destroy', an unmanaged stack's with 'docker volume rm'.`
   config: `supa config [--json]
 Show resolved paths + settings. Set with:
   supa config max-active <n>     stacks allowed at once (default 1)
-  supa config ram-budget <gb>    'supa stats' warns above this
+  supa config ram-budget <gb>    refuse up/restart/switch above this estimate; stats still prints it
   supa config backup-dir <path>  where backups go`,
   completion: `supa completion bash|zsh|pwsh
 Print a tab-completion script (verbs + project names). Install:
@@ -2378,11 +2383,11 @@ export function cmdHelp(rest: string[] = []): void {
   console.log(
     `supa — run local Supabase stacks (CLI-backed, cross-platform, no compose)
 
-  supa ls [--json]              list projects, docker label, live ports, status
+  supa ls [--json]              list projects, docker label, ports, status
   supa up <p...> [--exclude <containers>]   start stack(s) — refuses past the max-active limit *
   supa down <p...> | --all      stop one/more stacks (or every registered one)
   supa restart <p...>           stop + start a stack
-  supa switch <p>               stop all others, run only <p>
+  supa switch <p>               stop other registered stacks, run only <p>
   supa destroy <p> [--yes]      stop + DELETE a stack's data (containers + volumes)
   supa rotate <p> [--yes]       new JWT signing key + restart (invalidates tokens)
   supa backup <p> [--data-only] [--out <dir>]  dump the DB → <name>_<ts>.sql
@@ -2391,10 +2396,10 @@ export function cmdHelp(rest: string[] = []): void {
   supa upgrade [--check]        update supa itself (from GitHub Releases)
   supa status [--json]          raw docker view, grouped by project
   supa stats [--json]           CPU/MEM per container + per-stack & total RAM
-  supa limit <p>                apply supa.limits (memory/cpus caps) to a running stack
+  supa limit <p>                apply .supa/limits (memory/cpus caps) to a running stack
   supa logs <p> [svc] [--since t] [-f]   container logs, including stopped stacks
   supa studio <p>               open that project's Studio in the browser
-  supa env <p> [--json] [--write [f]]   print keys/URLs, or merge them into a .env file
+  supa env <p> [--json] [--write [f]]   print keys/URLs, or merge them into .env.local
   supa add <name> <path> [--init] [--slot N]   register (--init: init + assign a slot)
   supa rm <name>                unregister a project
   supa park [<dir>] · unpark <dir>   auto-discover supabase projects in a dir (opt-in)
