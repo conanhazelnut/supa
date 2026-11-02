@@ -7,7 +7,7 @@ import { dirname, isAbsolute, join as stdJoin, resolve, SEPARATOR as SEP } from 
 
 export const OS = Deno.build.os; // "darwin" | "linux" | "windows"
 
-export const VERSION = "0.1.6"; // keep in sync with deno.json + CHANGELOG
+export const VERSION = "0.2.0"; // keep in sync with deno.json + CHANGELOG
 export const REPO = "conanhazelnut/supa";
 
 // User-facing docs live in the repo, which a binary install doesn't have — every
@@ -103,6 +103,13 @@ export function isDir(p: string): boolean {
 export function die(msg: string): never {
   console.error(`supa: ${msg}`);
   Deno.exit(1);
+}
+/** Operational failure the caller may catch (switch restore, down --all). */
+export class CommandFailed extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "CommandFailed";
+  }
 }
 // Escape a string for safe interpolation into a RegExp.
 export function escapeRegExp(s: string): string {

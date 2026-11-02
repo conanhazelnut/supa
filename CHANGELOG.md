@@ -6,6 +6,48 @@ All notable changes to supa are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-11-01
+
+### Added
+
+- Stock `config.toml` ports stay in the file. supa remembers slot `0`–`111`
+  (`54421 + slot × 100`) in `.supa/ports` and passes it to the CLI as environment
+  variables, also written into `supabase/.env.local`. A host port edited away
+  from the official defaults is used as written.
+- `supa studio <project>` opens that project's Studio. It does not open a URL
+  when the stack is down.
+- `logs --since`, and logs from stopped containers. `-f` follows only while the
+  container is running.
+- `--json` on `doctor`, `stats`, `env`, and `up`.
+- `supa mcp`: a local stdio MCP server. `destroy`, `rotate`, `restore`, and
+  `pg-upgrade` require `confirm: true`.
+- With `ram_budget` set, `up`, `restart`, and `switch` refuse before starting
+  when the estimate would exceed it. Nothing running counts as 1.8 GiB. Restart
+  of a stack that is already up adds nothing.
+- `env --write` renames both legacy JWT keys and publishable/secret keys when
+  the project has no `supa.env.map`.
+- `up --exclude` forwards container names to `supabase start` for that start
+  only.
+
+### Changed
+
+- **Breaking:** `ls --json` is `{ projects, unmanaged }` instead of a bare array.
+- **Breaking:** `supa ports` no longer rewrites `config.toml` and no longer
+  accepts `--force`.
+- **Breaking:** when `max_active` is already full, `switch` stops the other
+  registered stacks first and starts them again if the target fails to start.
+- `down --all` tries every registered project, lists each failure, and exits
+  non-zero if any stop failed.
+- `pg-upgrade` copies the database volume to `supabase_db_<id>_pg<old>` and
+  deletes that copy only after restore succeeds. Downgrades stay refused.
+- `restore.post` warns instead of failing the command after the data has loaded.
+- CI and release builds use Deno 2.9.8.
+
+### Fixed
+
+- A failed `restart` says the stack is stopped, its volumes were kept, and the
+  retry is `supa up <name>`.
+
 ## [0.1.6] — 2026-08-11
 
 Ships the 0.1.5 work that never reached a GitHub Release (Windows CI failed on
@@ -281,6 +323,7 @@ Supabase stacks (one per project) on top of the official Supabase CLI.
   with checksum verification and a signed build-provenance attestation. Unit +
   CLI integration tests; CI runs fmt / lint / check / test on Linux and Windows.
 
+[0.2.0]: https://github.com/conanhazelnut/supa/releases/tag/v0.2.0
 [0.1.6]: https://github.com/conanhazelnut/supa/releases/tag/v0.1.6
 [0.1.5]: https://github.com/conanhazelnut/supa/releases/tag/v0.1.5
 [0.1.4]: https://github.com/conanhazelnut/supa/releases/tag/v0.1.4

@@ -27,7 +27,7 @@ jobs:
         with:
           # Pinned exact — a floating v2.x would let the toolchain drift between
           # runs. Keep in sync with release.yml (DENO_VERSION).
-          deno-version: "2.9.3"
+          deno-version: "2.9.8"
       - name: Format
         run: deno fmt --check
       - name: Lint

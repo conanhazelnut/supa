@@ -8,8 +8,9 @@ A thin, cross-platform CLI for running **multiple local Supabase stacks — one 
 project — on a single machine**, on top of the official
 [Supabase CLI](https://supabase.com/docs/guides/local-development). No hand-rolled
 Docker Compose: the CLI still owns every container; supa just decides _which_
-stacks run (up to a limit you set) and reads each stack's live facts (Docker
-label, host ports) straight from that project's `supabase/config.toml`.
+stacks run (up to a limit you set). The Docker label comes from each project's
+`config.toml`. Stock host ports stay in that file; supa assigns a local slot
+and passes it to the CLI.
 
 TypeScript (a thin `main.ts` over `src/`) compiled with `deno compile` to native
 binaries — `supa` (macOS/Linux) and `supa.exe` (Windows). Whoever runs it needs
@@ -85,11 +86,12 @@ Run `supa help` for the full list.
 | ------------- | ------------------------------------------------------------------------ |
 | **Lifecycle** | `up` · `down [--all]` · `restart` · `switch` · `destroy` · `rotate`      |
 | **Data**      | `backup` · `restore` · `pg-upgrade`                                      |
-| **Inspect**   | `ls` · `status` · `stats` · `logs` · `doctor` · `env [--write]`          |
-| **Resources** | `limit` · `prune`                                                        |
-| **Manage**    | `add [--init]` · `rm` · `park`/`unpark` · `ports` · `config` · `upgrade` |
+| **Inspect**   | `ls` · `status` · `stats` · `logs` · `studio` · `doctor` · `env [--write]` |
+| **Resources** | `limit` · `prune`                                                          |
+| **Manage**    | `add [--init]` · `rm` · `park`/`unpark` · `ports` · `config` · `mcp` · `upgrade` |
 
-`ls` / `status` / `config` take `--json` for scripting; `supa help <command>`
+`ls`, `status`, `config`, `doctor`, `stats`, `env`, and `up` take `--json`.
+`ls --json` is `{ projects, unmanaged }`. `supa help <command>`
 gives per-command details; `supa completion bash|zsh|pwsh` sets up tab-completion.
 
 Destructive commands — `destroy` (deletes a stack's data), `rotate` (invalidates
@@ -99,8 +101,8 @@ to confirm.
 ## How it works
 
 - The **registry** (`supa.registry`, `name|path` per line) is the only thing you
-  maintain. Docker label + ports are derived from each project's
-  `supabase/config.toml` every call.
+  maintain. The Docker label comes from `config.toml`. Stock ports get a local
+  slot under `.supa/ports`; a committed port band is read from the file.
 - **Config** lives in `SUPA_HOME` (default `~/.config/supa`, `%APPDATA%\supa` on
   Windows): `supa.registry` + `supa.config` (`max_active`, `ram_budget_gb`,
   `backup_dir`).

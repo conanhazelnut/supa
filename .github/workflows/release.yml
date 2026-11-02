@@ -22,7 +22,7 @@ permissions:
 env:
   # Pin the exact toolchain: a floating v2.x would silently change the bundled
   # runtime between releases. Keep in sync with ci.yml.
-  DENO_VERSION: "2.9.3"
+  DENO_VERSION: "2.9.8"
 
 jobs:
   release:

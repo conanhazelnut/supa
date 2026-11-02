@@ -16,6 +16,16 @@ import {
   resolveUnder,
 } from "./util.ts";
 import { configDir, configPath, readConfigKV, registryPath } from "./config.ts";
+import { handleMcpMessage, toolArgs } from "./mcp.ts";
+import {
+  apiPortMismatch,
+  firstFreeSlot,
+  parsePublishedPorts,
+  portForSlot,
+  portMode,
+  readHostPorts,
+} from "./ports.ts";
+import { ramDecision } from "./ram.ts";
 import {
   applyEnvMap,
   attributeUntagged,
@@ -740,4 +750,43 @@ Deno.test("uniqueNames keeps first occurrence order", () => {
   eq(uniqueNames(["a", "b", "a", "c", "b"]), ["a", "b", "c"]);
   eq(uniqueNames([]), []);
   eq(uniqueNames(["x"]), ["x"]);
+});
+Deno.test("stock config is auto and a 543xx edit is a committed band", () => {
+  eq(portMode(readHostPorts("[api]\nport = 54321\n")), "auto");
+  eq(portMode(readHostPorts("[api]\nport = 54331\n")), "file");
+  eq(portMode(readHostPorts("# port = 54399\n[api]\nport = 54321\n")), "auto");
+  eq(portForSlot(21, 0), 54421);
+  eq(portForSlot(22, 2), 54622);
+  eq(firstFreeSlot(new Set([54421]), []), 1);
+});
+Deno.test("published port check ignores a shim with no host ports", () => {
+  eq(apiPortMismatch(parsePublishedPorts("kong\t\tweb\n"), "web", 54421), null);
+  ok(
+    apiPortMismatch(
+      parsePublishedPorts("kong\t0.0.0.0:54321->8000/tcp\tweb\n"),
+      "web",
+      54421,
+    ) !== null,
+  );
+});
+Deno.test("destructive MCP tools refuse without confirm", async () => {
+  const refused = toolArgs("supa_destroy", { project: "web" });
+  ok("error" in refused);
+  const reply = await handleMcpMessage(
+    {
+      id: 1,
+      method: "tools/call",
+      params: { name: "supa_destroy", arguments: { project: "web" } },
+    },
+    () => Promise.resolve({ code: 0, out: "", err: "" }),
+  );
+  ok(JSON.stringify(reply).includes("confirm"));
+});
+Deno.test("ram gate uses 1.8 GiB when nothing is running and zero for a restart", () => {
+  const first = ramDecision({ budgetGiB: 1, currentMiB: 0, runningMiB: [], extras: 1 });
+  ok(!first.ok && first.assumed);
+  const restart = ramDecision({ budgetGiB: 1, currentMiB: 4000, runningMiB: [4000], extras: 0 });
+  ok(restart.ok);
+  const avg = ramDecision({ budgetGiB: 3, currentMiB: 1000, runningMiB: [1000], extras: 1 });
+  ok(avg.ok && !avg.assumed);
 });

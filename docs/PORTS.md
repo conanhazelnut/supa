@@ -8,11 +8,17 @@ file is for.
 `supa` reads whatever each `config.toml` declares, so the only hard rule is
 **don't overlap**. A simple convention keeps that easy.
 
-## Scheme — `543<SLOT><SERVICE>`
+## Scheme
 
-- **`SLOT`** (4th digit) = the project. `supa` auto-assigns a free digit `1`–`9`
-  (slot `0` also works if you set it by hand).
-- **`SERVICE`** (5th digit) = fixed by Supabase convention:
+Stock `config.toml` ports (the `54321` set, including `inspector_port = 8083`)
+are not rewritten. `supa` remembers a slot in `<project>/.supa/ports` and passes
+it to the Supabase CLI as environment variables. Slot `0` is API `54421`,
+Postgres `54422`, Studio `54423`; each next slot adds `100`. Slots run `0`–`111`.
+
+A host port that was edited into `54300`–`54399`, or any other non-stock value,
+is a committed band. `supa` uses the file and does not overlay it.
+
+The service offsets inside a slot match the official template:
 
 | SERVICE digit | Service                |
 | ------------- | ---------------------- |
@@ -25,22 +31,17 @@ file is for.
 | `8`           | Edge runtime inspector |
 | `9`           | Pooler                 |
 
-So Postgres for slot `2` = `543` + `2` + `2` = **54322**.
+Postgres for slot `2` is **54622** (`54422 + 2×100`). Inspector for that slot is **54628**.
 
-> The edge runtime `inspector_port` defaults to `8083` (off-scheme). `supa ports`
-> pulls it into `543<slot>8` so it can't collide across projects.
+`supa ls` shows the effective ports. `supa ports <name> [slot]` moves an auto slot
+and does not edit `config.toml`. `supa doctor` flags collisions.
 
-`supa ls` is the live source of truth for who owns which ports and what's UP.
-`supa ports <name> [slot]` re-bands a project's `543XX` ports to a free slot, and
-`supa doctor` flags any collisions.
+## Allocation (example)
 
-## Allocation (example — keep in sync as you add projects)
-
-| Project  | Slot | Band      | API   | Postgres | Studio                       |
-| -------- | ---- | --------- | ----- | -------- | ---------------------------- |
-| web      | 1    | `5431X`   | 54311 | 54312    | 54313                        |
-| api      | 2    | `5432X`   | 54321 | 54322    | 54323                        |
-| _(free)_ | 3…9  | `5433X` … |       |          | reserved for future projects |
+| Project | Slot | API   | Postgres | Studio |
+| ------- | ---- | ----- | -------- | ------ |
+| web     | 0    | 54421 | 54422    | 54423  |
+| api     | 1    | 54521 | 54522    | 54523  |
 
 > `supa` also resolves a `supabase/config.toml` that lives under `apps/<x>/` or
 > `examples/<x>/`, not just the repo root — handy for monorepos.

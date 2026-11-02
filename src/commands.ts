@@ -1,7 +1,9 @@
 // The command handlers. Each maps `supa <verb> …` to Supabase-CLI + docker calls,
 // deriving everything from the registry and each project's config.toml.
+import { fromFileUrl } from "@std/path";
 import {
   absolutize,
+  CommandFailed,
   die,
   DOCS_URL,
   escapeRegExp,
@@ -25,6 +27,7 @@ import {
   attributeUntagged,
   backupFileName,
   type BackupType,
+  DEFAULT_ENV_MAP,
   droppedRegistryNames,
   ensureSigningKeysPath,
   imageInUse,
@@ -54,9 +57,8 @@ import {
   hasExplicitEntry,
   labelOf,
   names,
-  nextFreeSlot,
   parkedDirs,
-  portOf,
+  portOverlay,
   readBackupDir,
   readEnvMap,
   readHooks,
@@ -64,16 +66,32 @@ import {
   readMaxActive,
   readRamBudget,
   readRegistry,
-  rebandConfig,
+  readSavedSlot,
   registryPath,
   rootOf,
   setConfigKey,
-  slotOf,
+  slotPath,
+  syncPortEnvFile,
+  writeSavedSlot,
 } from "./config.ts";
+import { handleMcpMessage, type McpMessage } from "./mcp.ts";
+import {
+  effectivePorts,
+  envForPorts,
+  firstFreeSlot,
+  type FoundPort,
+  type HostKey,
+  parsePublishedPorts,
+  portMode,
+  readHostPorts,
+  SLOT_MAX,
+} from "./ports.ts";
+import { ramDecision } from "./ram.ts";
 import {
   applyLimits,
+  copyDbVolume,
   dbContainer,
-  foreignSlots,
+  dbImage,
   guardMany,
   nameForLabel,
   runCapture,
@@ -85,6 +103,7 @@ import {
   stopStack,
   SUPABASE_MISSING,
   supabaseCmd,
+  volumeExists,
 } from "./supabase.ts";
 
 function requireProject(p: string): void {
@@ -94,38 +113,181 @@ function requireProject(p: string): void {
 function requireCfg(p: string): void {
   if (!cfgDir(p)) die(`no supabase/config.toml under '${rootOf(p)}' for '${p}'`);
 }
-// Shared by `ports` and `add --init`: refuse a slot held by another project or a
-// foreign container unless force is set. `allowForce` controls whether the error
-// advertises `--force` (ports) or another --slot (add, which has no --force).
-function assertSlotAvailable(
+function foundPorts(name: string): FoundPort[] | null {
+  const f = cfgFile(name);
+  if (!f || !isFile(f)) return null;
+  return readHostPorts(readTextFile(f));
+}
+function shownPort(name: string, key: HostKey): string {
+  const found = foundPorts(name);
+  const wd = cfgDir(name);
+  if (!found || !wd) return "";
+  const saved = portMode(found) === "auto" ? readSavedSlot(wd) : "missing";
+  const slot = typeof saved === "number" ? saved : null;
+  const value = effectivePorts(found, slot)[key];
+  return value === undefined ? "" : String(value);
+}
+async function portHolders(except?: string): Promise<Map<number, string>> {
+  const holders = new Map<number, string>();
+  for (const n of names()) {
+    if (n === except) continue;
+    const found = foundPorts(n);
+    const wd = cfgDir(n);
+    if (!found || !wd || portMode(found) !== "auto") {
+      if (found && portMode(found) === "file") {
+        for (const port of Object.values(effectivePorts(found, null))) holders.set(port, n);
+      }
+      continue;
+    }
+    const saved = readSavedSlot(wd);
+    if (typeof saved !== "number") continue;
+    for (const port of Object.values(effectivePorts(found, saved))) holders.set(port, n);
+  }
+  const ps = await runCapture("docker", [
+    "ps",
+    "--format",
+    '{{.Names}}\t{{.Ports}}\t{{.Label "com.supabase.cli.project"}}',
+  ]);
+  if (ps.code !== 0) return holders;
+  const own = except ? labelOf(except) : null;
+  for (const row of parsePublishedPorts(ps.out)) {
+    if (own && row.label === own) continue;
+    const who = row.label ? (nameForLabel(row.label) ?? row.name) : row.name;
+    for (const port of row.ports) if (!holders.has(port)) holders.set(port, who);
+  }
+  return holders;
+}
+function refuseHeldSlot(
   name: string,
-  slot: string,
-  foreign: Map<string, string[]>,
-  opts: { force: boolean; allowForce: boolean },
+  slot: number,
+  found: FoundPort[],
+  holders: Map<number, string>,
 ): void {
-  const alt = opts.allowForce
-    ? "or pass --force to override anyway"
-    : "or pick another --slot / omit --slot to auto-pick";
-  const clash = names().filter((n) => n !== name && slotOf(n) === slot);
-  if (clash.length && !opts.force) {
+  for (const [key, port] of Object.entries(effectivePorts(found, slot))) {
+    const who = holders.get(port);
+    if (!who || who === name) continue;
     die(
-      `slot ${slot} (543${slot}X) is already used by ${clash.join(", ")}.\n` +
-        `  omit the slot to auto-pick a free one, ${alt}.`,
+      `port ${port} (${key}) is held by ${who}.\n` +
+        `  The remembered slot was not changed. Move it with: supa ports ${name}`,
     );
   }
-  const held = foreign.get(slot);
-  if (held && !opts.force) {
-    const forceAlt = opts.allowForce
-      ? "or pass --force to take it anyway\n" +
-        `  (the stack won't start while they hold the port).`
-      : "or pick another --slot / omit --slot to auto-pick\n" +
-        `  (the stack won't start while they hold the port).`;
-    die(
-      `slot ${slot} (543${slot}X) is published by non-Supabase container(s): ${
-        held.join(", ")
-      }.\n` +
-        `  omit the slot to auto-pick a free band, ${forceAlt}`,
-    );
+}
+/** Stock config.toml gets a remembered slot. A committed band is left alone. */
+async function prepareSlot(name: string, prefer?: number): Promise<void> {
+  const wd = cfgDir(name);
+  const found = foundPorts(name);
+  if (!wd || !found || portMode(found) !== "auto") return;
+  const saved = readSavedSlot(wd);
+  if (saved === "invalid") die(`invalid slot in ${slotPath(wd)} (want slot = 0-${SLOT_MAX})`);
+  const holders = await portHolders(name);
+  const slot = typeof saved === "number" ? saved : prefer;
+  if (typeof slot === "number") {
+    if (slot < 0 || slot > SLOT_MAX) die(`slot must be ${0}-${SLOT_MAX}`);
+    refuseHeldSlot(name, slot, found, holders);
+    if (saved !== slot) writeSavedSlot(wd, slot);
+    syncPortEnvFile(wd, envForPorts(effectivePorts(found, slot), found));
+    return;
+  }
+  const free = firstFreeSlot(new Set(holders.keys()), found);
+  if (free === null) die(`no free port slot (0-${SLOT_MAX})`);
+  writeSavedSlot(wd, free);
+  syncPortEnvFile(wd, envForPorts(effectivePorts(found, free), found));
+}
+async function measureRegistered(): Promise<
+  { ok: true; total: number; runningMiB: number[]; names: string[] } | { ok: false; error: string }
+> {
+  const ps = await runCapture("docker", [
+    "ps",
+    "--filter",
+    "label=com.supabase.cli.project",
+    "--format",
+    '{{.Names}}\t{{.Label "com.supabase.cli.project"}}',
+  ]);
+  if (ps.code !== 0) return { ok: false, error: ps.err.trim() || "docker ps failed" };
+  const containers: string[] = [];
+  const labelOfContainer: Record<string, string> = {};
+  for (const line of ps.out.split(/\r?\n/)) {
+    const [container, lbl] = line.split("\t");
+    if (!container?.trim() || !lbl?.trim() || !nameForLabel(lbl.trim())) continue;
+    containers.push(container.trim());
+    labelOfContainer[container.trim()] = lbl.trim();
+  }
+  if (containers.length === 0) return { ok: true, total: 0, runningMiB: [], names: [] };
+  const st = await runCapture("docker", [
+    "stats",
+    "--no-stream",
+    "--format",
+    "{{.Name}}\t{{.MemUsage}}",
+    ...containers,
+  ]);
+  if (st.code !== 0) return { ok: false, error: st.err.trim() || "docker stats failed" };
+  const perLabel: Record<string, number> = {};
+  for (const line of st.out.split(/\r?\n/)) {
+    if (!line.trim()) continue;
+    const [container, mem] = line.split("\t");
+    const lbl = labelOfContainer[container?.trim() ?? ""];
+    if (!lbl) continue;
+    perLabel[lbl] = (perLabel[lbl] ?? 0) + memToMiB((mem ?? "").split("/")[0]);
+  }
+  const runningMiB = Object.values(perLabel);
+  const upNames = Object.keys(perLabel).map((l) => nameForLabel(l) ?? l).sort();
+  return { ok: true, total: runningMiB.reduce((a, b) => a + b, 0), runningMiB, names: upNames };
+}
+function refuseRam(
+  decision: { predictedMiB: number; assumed: boolean },
+  budget: number,
+  upNames: string[],
+): never {
+  const assumed = decision.assumed ? " (assuming 1.8 GiB for a stack that is not running)" : "";
+  const who = upNames.length
+    ? `down one of: ${upNames.join(", ")}`
+    : "no registered stack is up to down";
+  die(
+    `ram_budget would be exceeded${assumed}: ${
+      (decision.predictedMiB / 1024).toFixed(1)
+    } GiB > ${budget} GiB.\n  ${who}`,
+  );
+}
+async function guardRam(
+  toStart: string[],
+  opts?: { stopOthersFirst?: boolean },
+): Promise<void> {
+  const budget = readRamBudget();
+  if (budget === null) return;
+  const running = new Set(await runningLabels());
+  const measured = await measureRegistered();
+  if (!measured.ok) {
+    die(`docker stats failed — not starting while ram_budget is set\n  ${measured.error}`);
+  }
+  const extras = toStart.filter((n) => {
+    const lbl = labelOf(n);
+    return !(lbl && running.has(lbl));
+  }).length;
+  const decision = ramDecision({
+    budgetGiB: budget,
+    currentMiB: opts?.stopOthersFirst ? 0 : measured.total,
+    runningMiB: opts?.stopOthersFirst ? [] : measured.runningMiB,
+    extras,
+  });
+  if (!decision.ok) refuseRam(decision, budget, opts?.stopOthersFirst ? [] : measured.names);
+}
+async function stopOrDie(name: string): Promise<void> {
+  try {
+    await stopStack(name);
+  } catch (e) {
+    if (e instanceof CommandFailed) die(e.message);
+    throw e;
+  }
+}
+async function startOrDie(
+  name: string,
+  opts?: { failHint?: string; failHintAfterStart?: string; exclude?: string; json?: boolean },
+): Promise<void> {
+  try {
+    await startStack(name, opts);
+  } catch (e) {
+    if (e instanceof CommandFailed) die(e.message);
+    throw e;
   }
 }
 function requireArg(rest: string[], i: number, usage: string): string {
@@ -155,18 +317,65 @@ async function readLine(prompt: string): Promise<string> {
   return n === null ? "" : new TextDecoder().decode(buf.subarray(0, n)).trim();
 }
 
+const UP_USAGE = "usage: supa up <project...> [--exclude <containers>] [--json]";
+
+// `--exclude` / `-x` is this invocation only. It is not written to config.toml;
+// the next `up` without the flag starts whatever `[section] enabled` says.
+function parseUpArgs(rest: string[]): { names: string[]; exclude: string | null; json: boolean } {
+  const names: string[] = [];
+  const parts: string[] = [];
+  let json = false;
+  for (let i = 0; i < rest.length; i++) {
+    const a = rest[i];
+    if (a === "--json") {
+      json = true;
+      continue;
+    }
+    if (a === "--exclude" || a === "-x") {
+      const v = rest[++i];
+      if (v === undefined || v.startsWith("-")) die(UP_USAGE);
+      if (v.trim() === "") die(UP_USAGE);
+      parts.push(v);
+      continue;
+    }
+    names.push(a);
+  }
+  if (names.length < 1) die(UP_USAGE);
+  return { names, exclude: parts.length ? parts.join(",") : null, json };
+}
+
 export async function cmdUp(rest: string[]): Promise<void> {
-  if (rest.length < 1) die("usage: supa up <project...>");
+  const { names: raw, exclude, json } = parseUpArgs(rest);
   // Validate every name + the max-active budget BEFORE starting anyone, so a
   // later failure can't leave earlier stacks up under a broken partial run.
   // Deduplicate so `supa up web web` is one start, not a false max-active hit.
-  const list = uniqueNames(rest);
+  const list = uniqueNames(raw);
   for (const p of list) {
     requireProject(p);
     requireCfg(p);
   }
   await guardMany(list);
-  for (const p of list) await startStack(p);
+  for (const p of list) await prepareSlot(p);
+  await guardRam(list);
+  const projects: Array<
+    { name: string; ok: boolean; ports?: { api: string; db: string; studio: string } }
+  > = [];
+  for (const p of list) {
+    try {
+      await startStack(p, exclude ? { exclude, json } : { json });
+      projects.push({
+        name: p,
+        ok: true,
+        ports: { api: shownPort(p, "api"), db: shownPort(p, "db"), studio: shownPort(p, "studio") },
+      });
+    } catch (e) {
+      if (!(e instanceof CommandFailed)) throw e;
+      projects.push({ name: p, ok: false });
+      if (json) console.log(JSON.stringify({ projects }, null, 2));
+      die(e.message);
+    }
+  }
+  if (json) console.log(JSON.stringify({ projects }, null, 2));
 }
 export async function cmdDown(rest: string[]): Promise<void> {
   if (rest.length < 1) die("usage: supa down <project...> | supa down --all");
@@ -185,7 +394,20 @@ export async function cmdDown(rest: string[]): Promise<void> {
       }
       list.push(p);
     }
-    for (const p of list) await stopStack(p);
+    const failures: string[] = [];
+    for (const p of list) {
+      try {
+        await stopStack(p);
+      } catch (e) {
+        if (!(e instanceof CommandFailed)) throw e;
+        failures.push(`${p}: ${e.message}`);
+      }
+    }
+    if (failures.length) {
+      console.error("supa: down --all did not stop every project:");
+      for (const f of failures) console.error(`  ${f}`);
+      Deno.exit(1);
+    }
     return;
   }
   // Deduplicate like up/restart — `down web web` must not stop then fail.
@@ -194,7 +416,7 @@ export async function cmdDown(rest: string[]): Promise<void> {
     requireProject(p);
     requireCfg(p);
   }
-  for (const p of list) await stopStack(p);
+  for (const p of list) await stopOrDie(p);
 }
 export async function cmdSwitch(rest: string[]): Promise<void> {
   if (rest.length !== 1) die("usage: supa switch <project>");
@@ -205,16 +427,60 @@ export async function cmdSwitch(rest: string[]): Promise<void> {
   if (!cfgDir(target)) die(`no supabase/config.toml under '${rootOf(target)}' for '${target}'`);
   const tgt = labelOf(target);
   if (!tgt) die(`cannot resolve project_id for '${target}'`);
-  // Start the target first so a failed start cannot leave every other stack
-  // down. May briefly exceed max-active; others are stopped right after.
-  const alreadyUp = (await runningLabels()).includes(tgt);
-  if (!alreadyUp) await startStack(target);
-  for (const l of await runningLabels()) {
+  const running = await runningLabels();
+  const alreadyUp = running.includes(tgt);
+  const { value: max } = readMaxActive();
+  const hasRoom = alreadyUp || max === Infinity || running.length + 1 <= max;
+  if (!alreadyUp) {
+    await prepareSlot(target);
+    await guardRam([target], { stopOthersFirst: !hasRoom });
+  }
+  if (alreadyUp || hasRoom) {
+    if (!alreadyUp) await startOrDie(target);
+    for (const l of await runningLabels()) {
+      if (l === tgt) continue;
+      const nm = nameForLabel(l);
+      if (nm) await stopOrDie(nm);
+      else console.error(`! running stack '${l}' not in registry — leaving it up`);
+    }
+    return;
+  }
+  const stopped: string[] = [];
+  for (const l of running) {
     if (l === tgt) continue;
     const nm = nameForLabel(l);
-    if (nm) await stopStack(nm);
-    else console.error(`! running stack '${l}' not in registry — leaving it up`);
+    if (!nm) {
+      console.error(`! running stack '${l}' not in registry — leaving it up`);
+      continue;
+    }
+    try {
+      await stopStack(nm);
+      stopped.push(nm);
+    } catch (e) {
+      if (!(e instanceof CommandFailed)) throw e;
+      await restoreStopped(stopped);
+      die(`could not stop '${nm}' before switch: ${e.message}`);
+    }
   }
+  try {
+    await startStack(target);
+  } catch (e) {
+    if (!(e instanceof CommandFailed)) throw e;
+    const stillDown = await restoreStopped(stopped);
+    const extra = stillDown.length ? `\n  still down: ${stillDown.join(", ")}` : "";
+    die(`${e.message}${extra}`);
+  }
+}
+async function restoreStopped(namesToUp: string[]): Promise<string[]> {
+  const failed: string[] = [];
+  for (const n of namesToUp) {
+    try {
+      await startStack(n);
+    } catch {
+      failed.push(n);
+    }
+  }
+  return failed;
 }
 export async function cmdRestart(rest: string[]): Promise<void> {
   if (rest.length < 1) die("usage: supa restart <project...>");
@@ -227,25 +493,52 @@ export async function cmdRestart(rest: string[]): Promise<void> {
   // fit under max-active (already-up ones are net-zero). Refuse the whole batch
   // before stopping/starting anyone.
   await guardMany(list);
+  for (const p of list) await prepareSlot(p);
+  await guardRam(list);
   const running = await runningLabels();
   for (const p of list) {
     const lbl = labelOf(p);
     const wasRunning = !!lbl && running.includes(lbl);
-    if (wasRunning) await stopStack(p);
-    await startStack(p);
+    if (wasRunning) await stopOrDie(p);
+    await startOrDie(p, {
+      failHint: wasRunning
+        ? `'${p}' is stopped. Its volumes were kept. Retry: supa up ${p}`
+        : undefined,
+    });
   }
 }
 export async function cmdEnv(rest: string[]): Promise<void> {
   const write = rest.includes("--write") || rest.includes("-w");
-  const args = rest.filter((a) => a !== "--write" && a !== "-w");
-  if (args.length < 1 || args.length > 2) die("usage: supa env <project> [--write [file]]");
+  const json = rest.includes("--json");
+  const args = rest.filter((a) => a !== "--write" && a !== "-w" && a !== "--json");
+  if (json && write) die("usage: supa env <project> [--json] | supa env <project> --write [file]");
+  if (args.length < 1 || args.length > 2) {
+    die("usage: supa env <project> [--json] [--write [file]]");
+  }
   const p = args[0];
   const wd = cfgDir(p);
   if (!wd) die(`unresolvable project '${p}'`);
+  const overlay = portOverlay(p);
   if (!write) {
-    const code = await runInherit(supabaseCmd(), ["--workdir", wd, "status", "-o", "env"]);
-    if (code === 127) die(SUPABASE_MISSING);
-    if (code !== 0) Deno.exit(code);
+    if (!json) {
+      const code = await runInherit(
+        supabaseCmd(),
+        ["--workdir", wd, "status", "-o", "env"],
+        overlay,
+      );
+      if (code === 127) die(SUPABASE_MISSING);
+      if (code !== 0) Deno.exit(code);
+      return;
+    }
+    const got = await runCapture(supabaseCmd(), ["--workdir", wd, "status", "-o", "env"], overlay);
+    if (got.code === 127) die(SUPABASE_MISSING);
+    if (got.code !== 0) die(withStderr(`could not read env for '${p}'`, got.err));
+    const env: Record<string, string> = {};
+    for (const line of got.out.split(/\r?\n/)) {
+      const m = line.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/);
+      if (m) env[m[1]] = m[2];
+    }
+    console.log(JSON.stringify({ project: p, env }, null, 2));
     return;
   }
   const { code, out, err } = await runCapture(supabaseCmd(), [
@@ -254,24 +547,23 @@ export async function cmdEnv(rest: string[]): Promise<void> {
     "status",
     "-o",
     "env",
-  ]);
+  ], overlay);
   if (code === 127) die(SUPABASE_MISSING);
   if (code !== 0 || out.trim() === "") {
     die(withStderr(`could not read env for '${p}' — is it up? try 'supa up ${p}'`, err));
   }
   const target = args[1] ?? join(wd, ".env.local");
-  const envMap = readEnvMap(wd);
+  const fileMap = readEnvMap(wd);
+  const envMap = fileMap.length ? fileMap : DEFAULT_ENV_MAP;
   let incoming = out;
-  if (envMap.length) {
-    const applied = applyEnvMap(out, envMap);
-    incoming = applied.incoming;
-    if (applied.missing.length) {
-      console.error(
-        `  warning: supa.env.map references keys not in supabase output: ${
-          applied.missing.join(", ")
-        }`,
-      );
-    }
+  const applied = applyEnvMap(out, envMap);
+  incoming = applied.incoming;
+  if (applied.missing.length) {
+    console.error(
+      `  warning: ${
+        fileMap.length ? "supa.env.map" : "default env map"
+      } references keys not in supabase output: ${applied.missing.join(", ")}`,
+    );
   }
   const existing = isFile(target) ? readTextFile(target) : "";
   const { text, keys, map } = mergeDotenv(existing, incoming);
@@ -280,28 +572,40 @@ export async function cmdEnv(rest: string[]): Promise<void> {
   console.log(`supa: wrote ${keys.length} keys to ${target}`);
   for (const k of keys) console.log(`  ${k}=${maskSecret(k, map[k])}`);
   console.log(
-    envMap.length
+    fileMap.length
       ? `  mapped via ${join(wd, "supa.env.map")}`
-      : `  note: native Supabase key names — add a supa.env.map to rename them.`,
+      : `  mapped via the default rename table (anon/service_role and publishable/secret)`,
   );
+}
+function unmanagedLabels(running: Set<string>): string[] {
+  const known = new Set<string>();
+  for (const n of names()) {
+    const lbl = labelOf(n);
+    if (lbl) known.add(lbl);
+  }
+  return [...running].filter((l) => !known.has(l)).sort();
 }
 export async function cmdLs(rest: string[] = []): Promise<void> {
   const running = new Set(await runningLabels());
   const projects = readRegistry().sort((a, b) => (a.name < b.name ? -1 : 1));
+  const unmanaged = unmanagedLabels(running);
   if (rest.includes("--json")) {
-    // The stable machine interface — scripts should parse this, never the table.
-    const out = projects.map((p) => {
-      const lbl = labelOf(p.name);
-      return {
-        name: p.name,
-        label: lbl,
-        api: portOf(p.name, "api"),
-        db: portOf(p.name, "db"),
-        studio: portOf(p.name, "studio"),
-        status: lbl && running.has(lbl) ? "up" : "down",
-        root: p.root,
-      };
-    });
+    const out = {
+      projects: projects.map((p) => {
+        const lbl = labelOf(p.name);
+        return {
+          name: p.name,
+          label: lbl,
+          api: shownPort(p.name, "api"),
+          db: shownPort(p.name, "db"),
+          studio: shownPort(p.name, "studio"),
+          status: lbl && running.has(lbl) ? "up" : "down",
+          root: p.root,
+          managed: true,
+        };
+      }),
+      unmanaged: unmanaged.map((label) => ({ label, managed: false })),
+    };
     console.log(JSON.stringify(out, null, 2));
     return;
   }
@@ -317,12 +621,17 @@ export async function cmdLs(rest: string[] = []): Promise<void> {
     row([
       p.name,
       lbl,
-      portOf(p.name, "api") ?? "",
-      portOf(p.name, "db") ?? "",
-      portOf(p.name, "studio") ?? "",
+      shownPort(p.name, "api"),
+      shownPort(p.name, "db"),
+      shownPort(p.name, "studio"),
       running.has(lbl) ? "UP" : "down",
       p.root,
     ]);
+  }
+  if (unmanaged.length) {
+    console.log("");
+    console.log("not managed by supa (running, not in the registry):");
+    for (const label of unmanaged) console.log(`  ${label}`);
   }
 }
 export async function cmdStatus(rest: string[] = []): Promise<void> {
@@ -418,37 +727,63 @@ export function cmdConfig(rest: string[]): void {
   );
 }
 export async function cmdLogs(rest: string[]): Promise<void> {
-  if (rest.length < 1) die("usage: supa logs <project> [service] [-f]");
+  if (rest.length < 1) die("usage: supa logs <project> [service] [--since <time>] [-f]");
   const p = rest[0];
   requireProject(p);
   const lbl = labelOf(p);
   if (!lbl) die(`cannot resolve docker label for '${p}'`);
-  const follow = rest.includes("-f") || rest.includes("--follow");
-  const svc = rest.slice(1).find((a) => a !== "-f" && a !== "--follow");
+  let follow = false;
+  let since: string | undefined;
+  let svc: string | undefined;
+  for (let i = 1; i < rest.length; i++) {
+    const a = rest[i];
+    if (a === "-f" || a === "--follow") {
+      follow = true;
+      continue;
+    }
+    if (a === "--since") {
+      since = requireArg(rest, ++i, "usage: supa logs <project> [service] [--since <time>] [-f]");
+      continue;
+    }
+    if (a.startsWith("-")) die(`unknown flag '${a}'`);
+    if (svc) die("usage: supa logs <project> [service] [--since <time>] [-f]");
+    svc = a;
+  }
   const { out } = await runCapture("docker", [
     "ps",
+    "-a",
     "--filter",
     `label=com.supabase.cli.project=${lbl}`,
     "--format",
-    "{{.Names}}",
+    "{{.Names}}\t{{.Status}}",
   ]);
-  const containers = out.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
-  if (containers.length === 0) die(`no running containers for '${p}' — is it up? 'supa up ${p}'`);
+  const rows = out.split(/\r?\n/).map((s) => s.trim()).filter(Boolean).map((line) => {
+    const [name, status = ""] = line.split("\t");
+    return { name, status };
+  });
+  if (rows.length === 0) die(`no containers for '${p}' — destroyed stacks have no logs`);
   const svcOf = (c: string) =>
     c.replace(/^supabase_/, "").replace(new RegExp(`_${escapeRegExp(lbl)}$`), "");
   if (!svc) {
     console.log(`services for '${p}':`);
-    for (const c of containers.sort()) console.log(`  ${svcOf(c)}`);
-    console.log(`\nusage: supa logs ${p} <service> [-f]`);
+    for (const c of rows.map((r) => r.name).sort()) console.log(`  ${svcOf(c)}`);
+    console.log(`\nusage: supa logs ${p} <service> [--since <time>] [-f]`);
     return;
   }
-  const match = containers.find((c) => svcOf(c) === svc);
+  const match = rows.find((r) => svcOf(r.name) === svc);
   if (!match) {
-    die(`no service '${svc}' in '${p}' (have: ${containers.map(svcOf).sort().join(", ")})`);
+    die(
+      `no service '${svc}' in '${p}' (have: ${rows.map((r) => svcOf(r.name)).sort().join(", ")})`,
+    );
   }
+  const running = /^up\b/i.test(match.status);
   const args = ["logs", "--tail", "200"];
-  if (follow) args.push("-f");
-  args.push(match);
+  if (since) args.push("--since", since);
+  if (follow && running) args.push("-f");
+  if (follow && !running) {
+    console.error(`supa: '${svc}' is stopped — printing logs without --follow`);
+  }
+  args.push(match.name);
   await runInherit("docker", args);
 }
 export async function cmdDestroy(rest: string[]): Promise<void> {
@@ -511,11 +846,13 @@ export async function cmdAdd(rest: string[]): Promise<void> {
   for (let i = 0; i < rest.length; i++) {
     if (rest[i] === "--init") init = true;
     else if (rest[i] === "--slot") {
-      slot = requireArg(rest, ++i, "usage: supa add <name> <path> [--init] [--slot 0-9]");
+      slot = requireArg(rest, ++i, `usage: supa add <name> <path> [--init] [--slot 0-${SLOT_MAX}]`);
     } else pos.push(rest[i]);
   }
-  if (pos.length !== 2) die("usage: supa add <name> <path> [--init] [--slot 0-9]");
-  if (slot !== undefined && !/^\d$/.test(slot)) die("--slot must be a single digit 0-9");
+  if (pos.length !== 2) die(`usage: supa add <name> <path> [--init] [--slot 0-${SLOT_MAX}]`);
+  if (slot !== undefined && (!/^\d+$/.test(slot) || Number(slot) > SLOT_MAX)) {
+    die(`--slot must be 0-${SLOT_MAX}`);
+  }
   const [name, path] = pos;
   if (!SAFE_NAME.test(name)) die(`invalid name '${name}' (use letters/digits/._-)`);
   // Create empty registry before names() — readRegistry dies if the file is missing.
@@ -527,28 +864,17 @@ export async function cmdAdd(rest: string[]): Promise<void> {
   const abs = absolutize(path);
   if (!isDir(abs)) console.error(`  warning: '${abs}' is not a directory (registering anyway)`);
 
-  // Resolve + assert the port slot BEFORE writing the registry / running init,
-  // so a clash or full band leaves no half-applied entry.
-  // Existing config + no --slot: keep its ports (use `supa ports` to re-band).
-  // Fresh init, or existing + explicit --slot: pick/assert and reband after.
-  // Never pass `name` to nextFreeSlot here — before the registry write a
-  // park-discovered same name would make us prefer that project's band.
+  // A requested slot is checked before the registry write so a clash leaves no row.
+  // File-mode configs ignore --slot; their ports stay in config.toml.
   const alreadyConfigured = init && cfgCandidates(abs).length > 0;
-  let chosen: string | undefined;
-  if (init && (!alreadyConfigured || slot !== undefined)) {
-    const foreign = await foreignSlots();
-    chosen = slot;
-    if (chosen === undefined) {
-      const s = nextFreeSlot(new Set(foreign.keys()));
-      if (s === null) {
-        die(
-          "no free port slot (0-9 all taken by projects or other containers) — " +
-            "pass --slot 0 or free a band first",
-        );
-      }
-      chosen = s;
-    }
-    assertSlotAvailable(name, chosen, foreign, { force: false, allowForce: false });
+  const prefer = slot === undefined ? undefined : Number(slot);
+  const existingToml = cfgCandidates(abs)[0];
+  const existingFound = existingToml && isFile(join(existingToml, "supabase", "config.toml"))
+    ? readHostPorts(readTextFile(join(existingToml, "supabase", "config.toml")))
+    : null;
+  if (init && prefer !== undefined && (!existingFound || portMode(existingFound) === "auto")) {
+    const holders = await portHolders();
+    refuseHeldSlot(name, prefer, existingFound ?? [], holders);
   }
 
   const reg = registryPath();
@@ -577,18 +903,15 @@ export async function cmdAdd(rest: string[]): Promise<void> {
         die(`'supabase init' failed for '${name}' (exit ${code})`);
       }
     }
-    const f = cfgFile(name);
-    if (chosen && f && isFile(f)) {
-      const changes = rebandConfig(f, chosen);
-      console.log(
-        `  assigned slot ${chosen} — ${changes.length} port(s) re-banded (543${chosen}X)`,
-      );
-    } else if (alreadyConfigured && slot === undefined) {
-      const s = nextFreeSlot(new Set((await foreignSlots()).keys()));
-      if (s) {
-        console.log(
-          `  existing ports kept — re-band with: supa ports ${name} ${s}`,
-        );
+    const foundNow = foundPorts(name);
+    if (foundNow && portMode(foundNow) === "file") {
+      console.log(`  existing ports kept — they are committed in config.toml`);
+    } else if (foundNow) {
+      await prepareSlot(name, prefer);
+      const wdNow = cfgDir(name);
+      const saved = wdNow ? readSavedSlot(wdNow) : "missing";
+      if (typeof saved === "number") {
+        console.log(`  assigned slot ${saved} — config.toml was not changed`);
       }
     }
   }
@@ -598,10 +921,6 @@ export async function cmdAdd(rest: string[]): Promise<void> {
       `  config: ${join(wd, "supabase", "config.toml")} (label: ${labelOf(name) ?? "?"})`,
     );
   } else console.error(`  note: no supabase/config.toml found under it yet`);
-  if (!init) {
-    const s = nextFreeSlot(new Set((await foreignSlots()).keys()));
-    if (s) console.log(`  next free port band: 543${s}X  (apply: supa ports ${name} ${s})`);
-  }
 }
 export function cmdRm(rest: string[]): void {
   if (rest.length !== 1) die("usage: supa rm <name>");
@@ -710,48 +1029,67 @@ export function cmdNames(): void {
   for (const n of names()) console.log(n);
 }
 export async function cmdPorts(rest: string[]): Promise<void> {
-  const force = rest.includes("--force") || rest.includes("-f");
-  const pos = rest.filter((a) => a !== "--force" && a !== "-f");
-  if (pos.length < 1 || pos.length > 2) die("usage: supa ports <name> [slot 0-9] [--force]");
-  const name = pos[0];
+  if (rest.includes("--force") || rest.includes("-f")) {
+    die("supa ports no longer rewrites config.toml. Edit a committed port band in the file.");
+  }
+  if (rest.length < 1 || rest.length > 2) die(`usage: supa ports <name> [slot 0-${SLOT_MAX}]`);
+  const name = rest[0];
   requireProject(name);
-  const f = cfgFile(name);
-  if (!f || !isFile(f)) die(`no supabase/config.toml for '${name}'`);
-  const foreign = await foreignSlots();
-  let slot = pos[1];
-  if (slot === undefined) {
-    const s = nextFreeSlot(new Set(foreign.keys()), name);
-    if (s === null) die("no free port slot (0-9 all taken by projects or other containers)");
-    slot = s;
+  const wd = cfgDir(name);
+  const found = foundPorts(name);
+  if (!wd || !found) die(`no supabase/config.toml for '${name}'`);
+  if (portMode(found) === "file") {
+    die(
+      `'${name}' has committed ports in config.toml. supa will not override them.\n` +
+        `  Edit that file to change the band.`,
+    );
   }
-  if (!/^\d$/.test(slot)) die("slot must be a single digit 0-9");
-  assertSlotAvailable(name, slot, foreign, { force, allowForce: true });
-  const changes = rebandConfig(f, slot);
-  if (changes.length === 0) {
-    console.log(`no re-bandable 543XX ports found (or already on slot ${slot}) in ${f}`);
-    return;
+  const holders = await portHolders(name);
+  let slot: number;
+  if (rest[1] === undefined) {
+    const current = readSavedSlot(wd);
+    if (typeof current === "number") slot = current;
+    else {
+      const free = firstFreeSlot(new Set(holders.keys()), found);
+      if (free === null) die(`no free port slot (0-${SLOT_MAX})`);
+      slot = free;
+    }
+  } else {
+    if (!/^\d+$/.test(rest[1])) die(`slot must be 0-${SLOT_MAX}`);
+    slot = Number(rest[1]);
   }
+  if (slot > SLOT_MAX) die(`slot must be 0-${SLOT_MAX}`);
+  refuseHeldSlot(name, slot, found, holders);
+  writeSavedSlot(wd, slot);
+  const ports = effectivePorts(found, slot);
+  syncPortEnvFile(wd, envForPorts(ports, found));
   console.log(
-    `supa: re-banded ${name} to slot ${slot} — ${changes.length} port(s) (backup: ${f}.bak)`,
+    `supa: ${name} slot ${slot} — API ${ports.api}  DB ${ports.db}  Studio ${ports.studio}`,
   );
-  for (const c of changes) console.log(`  ${c}`);
-  console.log(`  apply: supa restart ${name}`);
+  console.log(`  config.toml was not changed. Apply with: supa restart ${name}`);
 }
 // Oldest CLI verified to support everything supa drives (signing_keys_path, status -o env).
 const MIN_SUPABASE_CLI = "2.30.0";
 
-export async function cmdDoctor(): Promise<void> {
+export async function cmdDoctor(rest: string[] = []): Promise<void> {
+  const json = rest.includes("--json");
+  const report: Record<string, unknown> = {};
+  const say = (line: string) => {
+    if (!json) console.log(line);
+  };
   const ok = (b: boolean) => (b ? "✓" : "✗");
-  console.log("supa doctor");
+  say("supa doctor");
   const dv = await runCapture("docker", ["version", "--format", "{{.Server.Version}}"]);
   const dockerUp = dv.code === 0 && dv.out.trim() !== "";
-  console.log(
+  report.docker = { ok: dockerUp, version: dockerUp ? dv.out.trim() : null };
+  say(
     `  ${ok(dockerUp)} docker daemon        ${
       dockerUp ? "v" + dv.out.trim() : "not running / not found"
     }`,
   );
   const sv = await runCapture(supabaseCmd(), ["--version"]);
-  console.log(
+  report.supabase = { ok: sv.code === 0, version: sv.code === 0 ? sv.out.trim() : null };
+  say(
     `  ${ok(sv.code === 0)} supabase CLI         ${
       sv.code === 0 ? sv.out.trim() : "not found on PATH"
     }`,
@@ -759,35 +1097,40 @@ export async function cmdDoctor(): Promise<void> {
   if (sv.code === 0) {
     const v = sv.out.match(/\d+\.\d+\.\d+/)?.[0];
     if (v && semverNewer(MIN_SUPABASE_CLI, v)) {
-      console.log(
+      say(
         `     ⚠ rotate/env need supabase CLI >= ${MIN_SUPABASE_CLI} (JWT signing keys)`,
       );
     }
   }
   const reg = registryPath();
-  console.log(`  ${ok(isFile(reg))} registry             ${reg}`);
-  if (!isFile(reg)) return;
+  report.registry = reg;
+  say(`  ${ok(isFile(reg))} registry             ${reg}`);
+  if (!isFile(reg)) {
+    if (json) console.log(JSON.stringify(report, null, 2));
+    return;
+  }
   const projs = readRegistry();
-  console.log(`  ${ok(projs.length > 0)} projects registered  ${projs.length}`);
+  report.projects = projs.length;
+  say(`  ${ok(projs.length > 0)} projects registered  ${projs.length}`);
   // JSON.stringify neutralizes control chars — these names failed the charset
   // rule, so they may contain anything, including terminal escapes.
   const dropped = droppedRegistryNames(readTextFile(reg));
-  console.log(
+  say(
     `  ${ok(dropped.length === 0)} registry names valid` +
       (dropped.length ? `  (${dropped.length} line(s) ignored)` : ""),
   );
   for (const n of dropped) {
-    console.log(`     ✗ ignored (name must match [A-Za-z0-9._-]): ${JSON.stringify(n)}`);
+    say(`     ✗ ignored (name must match [A-Za-z0-9._-]): ${JSON.stringify(n)}`);
   }
   // Relative roots still work (absolutized on read against cwd) but drift when
   // you invoke supa elsewhere — flag them so they get rewritten absolute.
   const relRoots = relativeRegistryEntries(readTextFile(reg));
-  console.log(
+  say(
     `  ${ok(relRoots.length === 0)} registry paths absolute` +
       (relRoots.length ? `  (${relRoots.length} relative)` : ""),
   );
   for (const r of relRoots) {
-    console.log(
+    say(
       `     ! ${r.name}: relative path ${JSON.stringify(r.path)} — re-add or edit to absolute`,
     );
   }
@@ -795,35 +1138,39 @@ export async function cmdDoctor(): Promise<void> {
   for (const p of projs) {
     if (!cfgDir(p.name)) {
       allCfg = false;
-      console.log(`     ✗ ${p.name}: no config.toml under ${p.root}`);
+      say(`     ✗ ${p.name}: no config.toml under ${p.root}`);
     }
   }
-  if (allCfg && projs.length) console.log(`  ✓ all config.toml resolve`);
+  if (allCfg && projs.length) say(`  ✓ all config.toml resolve`);
   // Multiple supabase/ trees under one registry root: cfgDir picks the first
   // (root, else alphabetical apps/*, then examples/*) — warn so the wrong stack
   // isn't bound silently.
   for (const p of projs) {
     const cands = cfgCandidates(p.root);
     if (cands.length > 1) {
-      console.log(
+      say(
         `     ! ${p.name}: ${cands.length} config.toml candidates — using ${cands[0]}`,
       );
-      for (const c of cands.slice(1)) console.log(`       also: ${c}`);
+      for (const c of cands.slice(1)) say(`       also: ${c}`);
     }
   }
   const seen: Record<string, string> = {};
   let collision = false;
+  const collisions: string[] = [];
   for (const p of projs) {
-    for (const sec of ["api", "db", "studio"]) {
-      const port = portOf(p.name, sec);
+    for (const sec of ["api", "db", "studio"] as const) {
+      const port = shownPort(p.name, sec);
       if (!port) continue;
       if (seen[port]) {
         collision = true;
-        console.log(`     ✗ port ${port}: ${seen[port]} vs ${p.name}.${sec}`);
+        const note = `port ${port}: ${seen[port]} vs ${p.name}.${sec}`;
+        collisions.push(note);
+        say(`     ✗ ${note}`);
       } else seen[port] = `${p.name}.${sec}`;
     }
   }
-  console.log(`  ${ok(!collision)} no port collisions`);
+  report.portCollisions = collisions;
+  say(`  ${ok(!collision)} no port collisions`);
   // Same docker label on two projects: switch/destroy/status attribute containers
   // to the wrong one. Surfaces here so a duplicated project_id isn't silent.
   const labels: Record<string, string> = {};
@@ -833,25 +1180,19 @@ export async function cmdDoctor(): Promise<void> {
     if (!lbl) continue;
     if (labels[lbl]) {
       labelClash = true;
-      console.log(`     ✗ label '${lbl}': ${labels[lbl]} vs ${p.name}`);
+      say(`     ✗ label '${lbl}': ${labels[lbl]} vs ${p.name}`);
     } else labels[lbl] = p.name;
   }
-  console.log(`  ${ok(!labelClash)} no duplicate project_id labels`);
-  // 543XX bands held by containers outside supa: supa can't (and won't) move them,
-  // but a stack pointed at one of those bands will fail to bind.
-  const foreign = await foreignSlots();
-  console.log(`  ${ok(foreign.size === 0)} no 543XX ports held by other containers`);
-  for (const [slot, who] of [...foreign].sort()) {
-    const hit = projs.filter((p) => slotOf(p.name) === slot).map((p) => p.name);
-    console.log(
-      `     ! 543${slot}X held by ${who.join(", ")}` +
-        (hit.length ? ` — collides with ${hit.join(", ")} (re-band: supa ports ${hit[0]})` : ""),
-    );
-  }
+  report.duplicateProjectIds = labelClash;
+  say(`  ${ok(!labelClash)} no duplicate project_id labels`);
   const { value, source } = readMaxActive();
-  console.log(`  · max_active = ${value === Infinity ? "unlimited" : value} (${source})`);
+  report.maxActive = value === Infinity ? null : value;
+  report.maxActiveSource = source;
+  say(`  · max_active = ${value === Infinity ? "unlimited" : value} (${source})`);
+  if (json) console.log(JSON.stringify(report, null, 2));
 }
-export async function cmdStats(): Promise<void> {
+export async function cmdStats(rest: string[] = []): Promise<void> {
+  const json = rest.includes("--json");
   const { code, out, err } = await runCapture("docker", [
     "ps",
     "--filter",
@@ -870,6 +1211,18 @@ export async function cmdStats(): Promise<void> {
     }
   }
   if (containers.length === 0) {
+    if (json) {
+      console.log(JSON.stringify(
+        {
+          containers: [],
+          totalMiB: 0,
+          budgetGiB: readRamBudget(),
+        },
+        null,
+        2,
+      ));
+      return;
+    }
     console.log("no supabase containers running");
     return;
   }
@@ -883,26 +1236,43 @@ export async function cmdStats(): Promise<void> {
   if (st.code !== 0) die(withStderr("docker stats failed", st.err));
   const rows = st.out.split(/\r?\n/).filter(Boolean).map((l) => l.split("\t"));
   rows.sort((a, b) => (a[0] < b[0] ? -1 : 1));
+  const perProject: Record<string, number> = {};
+  let grand = 0;
+  const jsonRows: Array<
+    { project: string; service: string; cpu: string; mem: string; mib: number }
+  > = [];
+  for (const [name, cpu, mem] of rows) {
+    const label = labelByName[name] || (name.split("_").pop() ?? "");
+    const svc = name.replace(/^supabase_/, "").replace(new RegExp(`_${escapeRegExp(label)}$`), "");
+    const used = memToMiB((mem ?? "").split("/")[0]);
+    perProject[label] = (perProject[label] ?? 0) + used;
+    grand += used;
+    jsonRows.push({ project: label, service: svc, cpu: cpu ?? "", mem: mem ?? "", mib: used });
+  }
+  const budget = readRamBudget();
+  if (json) {
+    console.log(JSON.stringify(
+      {
+        containers: jsonRows,
+        totalMiB: grand,
+        budgetGiB: budget,
+        overBudget: budget !== null && grand / 1024 > budget,
+      },
+      null,
+      2,
+    ));
+    return;
+  }
   const w = [10, 12, 9];
   const line = (c: string[]) =>
     console.log(c[0].padEnd(w[0]) + " " + c[1].padEnd(w[1]) + " " + c[2].padEnd(w[2]) + " " + c[3]);
   line(["PROJECT", "SERVICE", "CPU%", "MEM"]);
-  const perProject: Record<string, number> = {};
-  let grand = 0;
-  for (const [name, cpu, mem] of rows) {
-    const label = labelByName[name] || (name.split("_").pop() ?? "");
-    const svc = name.replace(/^supabase_/, "").replace(new RegExp(`_${escapeRegExp(label)}$`), "");
-    line([label, svc, cpu, mem]);
-    const used = memToMiB((mem ?? "").split("/")[0]);
-    perProject[label] = (perProject[label] ?? 0) + used;
-    grand += used;
-  }
+  for (const row of jsonRows) line([row.project, row.service, row.cpu, row.mem]);
   console.log("");
   for (const [label, mib] of Object.entries(perProject).sort()) {
     line([label, "(total)", "", fmtMiB(mib)]);
   }
   line(["ALL", "(total)", "", fmtMiB(grand)]);
-  const budget = readRamBudget();
   if (budget) {
     const usedGiB = grand / 1024;
     const pct = Math.round((usedGiB / budget) * 100);
@@ -978,8 +1348,8 @@ export async function cmdRotate(rest: string[]): Promise<void> {
   const running = await runningLabels();
   const lbl = labelOf(p);
   if (lbl && running.includes(lbl)) {
-    await stopStack(p);
-    await startStack(p);
+    await stopOrDie(p);
+    await startOrDie(p);
   } else {
     console.log(`  '${p}' isn't running — start it to apply: supa up ${p}`);
   }
@@ -1028,6 +1398,7 @@ async function performBackup(
       const code = await runInherit(
         supabaseCmd(),
         ["--workdir", wd, "db", "dump", "--local", ...part.args, "-f", tmp],
+        portOverlay(p),
       );
       if (code === 127) throw new Error(SUPABASE_MISSING);
       if (code !== 0) {
@@ -1253,7 +1624,7 @@ export async function cmdRestore(rest: string[]): Promise<void> {
         `  stack, or use a --data-only dump. See ${DOCS_URL}/SUPA.md`,
     );
   }
-  if (hooks.restorePost) await runHook("restore.post", hooks.restorePost, wd);
+  if (hooks.restorePost) await runHook("restore.post", hooks.restorePost, wd, { soft: true });
   console.log(`✓ restored ${p} from ${file}`);
 }
 export async function cmdUpgrade(rest: string[]): Promise<void> {
@@ -1307,21 +1678,23 @@ export async function cmdUpgrade(rest: string[]): Promise<void> {
     die(`could not resolve a backup directory for '${p}' (needed for the data snapshot)`);
   }
   const volume = `supabase_db_${lbl}`;
+  const keep = `${volume}_pg${current}`;
   const payload = join(dir, `${p}_upgrade-${current}-to-${to}_${tsStamp(new Date())}.sql`);
 
   console.log(`supa pg-upgrade '${p}': Postgres ${current} → ${to}`);
   console.log(`  1. data-only snapshot   → ${payload}`);
   console.log(`  2. stop the stack`);
-  console.log(`  3. major_version ${current} → ${to} in config.toml (+ .bak)`);
-  console.log(`  4. drop DB volume       ${volume}`);
-  console.log(`  5. start the stack      (fresh ${to} volume; migrations run)`);
-  console.log(`  6. restore the snapshot (+ restore.pre/post hooks)`);
+  console.log(`  3. copy DB volume       ${volume} → ${keep}`);
+  console.log(`  4. major_version ${current} → ${to} in config.toml (+ .bak)`);
+  console.log(`  5. remove ${volume} so Postgres ${to} creates a new one`);
+  console.log(`  6. start and restore    (delete ${keep} only after restore succeeds)`);
   if (flags.has("--dry-run")) {
     console.log("(dry run — nothing changed)");
     return;
   }
 
-  console.error(`⚠ this DROPS the '${p}' DB volume and rebuilds it on Postgres ${to}.`);
+  console.error(`⚠ this rebuilds the '${p}' DB volume on Postgres ${to}.`);
+  console.error(`  The old volume is copied to ${keep} and deleted only after restore succeeds.`);
   if (isDowngrade) {
     console.error(
       `  ⚠ DOWNGRADE ${current} → ${to}: a ${current} dump may not load into ${to} (unsupported by Postgres).`,
@@ -1352,39 +1725,54 @@ export async function cmdUpgrade(rest: string[]): Promise<void> {
 
   // 2. stop
   console.log(`>> [2/6] stopping ${p}`);
-  await stopStack(p);
+  await stopOrDie(p);
 
-  // 3. bump major_version (backup config first)
-  console.log(`>> [3/6] major_version ${current} → ${to}`);
+  console.log(`>> [3/6] copying ${volume} → ${keep}`);
+  try {
+    if (await volumeExists(keep)) {
+      die(
+        `volume ${keep} already exists — not touching ${volume} or config.toml.\n` +
+          `  Remove that leftover only if you know it is safe: docker volume rm ${keep}`,
+      );
+    }
+    const image = await dbImage(volume);
+    await copyDbVolume({ image, from: volume, to: keep });
+  } catch (e) {
+    if (e instanceof CommandFailed) {
+      die(
+        `${e.message}\n  ${volume} was not removed and config.toml was not changed.\n${recovery}`,
+      );
+    }
+    throw e;
+  }
+
+  // 4. bump major_version (backup config first) only after the copy exists.
+  console.log(`>> [4/6] major_version ${current} → ${to}`);
   const { text: bumped, changed } = setMajorVersion(cfgText, to);
-  if (!changed) die(`could not update major_version in ${f}\n${recovery}`);
+  if (!changed) die(`could not update major_version in ${f}\n  old data: ${keep}\n${recovery}`);
   Deno.writeTextFileSync(`${f}.bak`, cfgText);
   Deno.writeTextFileSync(f, bumped);
 
-  // 4. drop the DB volume so the stack recreates it on the new PG version
-  console.log(`>> [4/6] dropping volume ${volume}`);
+  console.log(`>> [5/6] removing ${volume} so the new major can create it`);
   const rm = await runCapture("docker", ["volume", "rm", volume]);
   if (rm.code !== 0) {
     die(
-      `failed to drop volume ${volume} (is the stack fully stopped?).\n` +
-        `  recover config: mv ${f}.bak ${f}\n${recovery}`,
+      `could not remove ${volume} after copying it to ${keep}.\n` +
+        `  revert config: mv ${f}.bak ${f}\n${recovery}`,
     );
   }
 
-  // 5. start fresh (new PG version; supabase applies migrations)
-  console.log(`>> [5/6] starting ${p} on Postgres ${to}`);
-  const preStartHint = `  volume already dropped — recover:\n` +
-    `  recover config: mv ${f}.bak ${f}\n${recovery}\n` +
-    `  retry: docker volume rm ${volume} 2>/dev/null; supa up ${p}; supa restore ${p} ${payload}`;
+  console.log(`>> [6/6] starting ${p} on Postgres ${to}`);
+  const preStartHint = `  old data is still in volume ${keep}\n` +
+    `  revert config: mv ${f}.bak ${f}\n${recovery}`;
   // After a successful start, do NOT advise reverting major_version — the stack
   // is already on Postgres $to; reload the snapshot instead.
   const postStartHint =
-    `  volume already dropped — stack is on Postgres ${to} but empty.\n${recovery}\n` +
+    `  old data is still in volume ${keep}. Stack is on Postgres ${to}.\n${recovery}\n` +
     `  reload: supa restore ${p} ${payload}`;
-  await startStack(p, { failHint: preStartHint, failHintAfterStart: postStartHint });
+  await startOrDie(p, { failHint: preStartHint, failHintAfterStart: postStartHint });
 
-  // 6. restore the data snapshot (project's schema prep via restore.pre)
-  console.log(`>> [6/6] restoring data`);
+  console.log(`>> restoring data`);
   const container = await dbContainer(lbl);
   if (!container) {
     die(`stack up but no db container found — reload manually: supa restore ${p} ${payload}`);
@@ -1397,16 +1785,19 @@ export async function cmdUpgrade(rest: string[]): Promise<void> {
   if (code !== 0) {
     die(
       `data restore failed (psql exit ${code}). The stack is up on Postgres ${to} but empty.\n` +
+        `  old data is still in volume ${keep}. Revert major_version: mv ${f}.bak ${f}\n` +
         `  reload manually: supa restore ${p} ${payload}\n` +
         `  (usually a restore.pre hook to build the schema first is what's missing.)`,
     );
   }
   if (hooks.restorePost) {
-    await runHook("restore.post", hooks.restorePost, wd, {
-      failHint: `  data restore already succeeded — only restore.post failed.\n` +
-        `  snapshot kept: ${payload}\n` +
-        `  re-run the hook by hand, or ignore if it was optional.`,
-    });
+    await runHook("restore.post", hooks.restorePost, wd, { soft: true });
+  }
+  const dropped = await runCapture("docker", ["volume", "rm", keep]);
+  if (dropped.code !== 0) {
+    console.error(
+      `supa: upgraded, but ${keep} is still there. Remove it when you are sure: docker volume rm ${keep}`,
+    );
   }
   console.log(`✓ upgraded ${p} to Postgres ${to}  (snapshot kept: ${payload})`);
 }
@@ -1641,7 +2032,7 @@ export async function cmdPrune(rest: string[]): Promise<void> {
 // Every dispatchable verb (aliases excluded) — completions + help share this.
 const VERBS =
   "ls up down restart switch destroy rotate backup restore pg-upgrade upgrade status stats " +
-  "limit logs env add rm park unpark ports doctor prune config completion version help";
+  "limit logs studio env add rm park unpark ports doctor prune config mcp completion version help";
 
 export function cmdCompletion(rest: string[]): void {
   const usage = "usage: supa completion bash|zsh|pwsh   (see 'supa help completion' for install)";
@@ -1697,10 +2088,13 @@ export function cmdCompletion(rest: string[]): void {
 
 // Detailed help per command — `supa help <cmd>` or `supa <cmd> --help`.
 const HELP_TOPICS: Record<string, string> = {
-  up: `supa up <project...>   (alias: start)
+  up: `supa up <project...> [--exclude <containers>]   (alias: start)
 Start one or more stacks via 'supabase start'. Refuses past the max-active
 limit (default 1) — raise it: supa config max-active <n>. Runs the project's
-up.pre / up.post hooks (supa.hooks) and applies supa.limits caps if present.`,
+up.pre / up.post hooks (supa.hooks) and applies supa.limits caps if present.
+--exclude (or -x) is this start only — it is not written to config.toml.
+Names are the CLI's container names (studio, mailpit, gotrue, …), comma-separated.
+The database cannot be excluded. The next up without the flag follows config.toml.`,
   down: `supa down <project...> | supa down --all   (alias: stop)
 Stop stack(s) via 'supabase stop' (data stays in the docker volume).
 Named lists refuse the whole batch if any name is unknown / has no
@@ -1708,9 +2102,10 @@ config.toml. --all skips broken registry rows (warns) so one bad entry
 cannot block stopping the rest. Runs down.pre / down.post only when the
 stack is currently UP (never-started park discoveries stay quiet).`,
   switch: `supa switch <project>   (alias: only)
-Start <project> first (if it isn't already up), then stop every other
-registered running stack. A failed start leaves the others untouched
-(may briefly exceed max-active). Unregistered running stacks are left alone.`,
+If max-active has room, start <project> first, then stop every other
+registered running stack. If it is already full, stop the others first and
+start them again when the target fails to come up. Unregistered running
+stacks are left alone. A set ram_budget can refuse before anything stops.`,
   destroy: `supa destroy <project> [--yes]
 Stop the stack and DELETE its local data (containers + volumes). Cannot be
 undone. Asks you to type the project name; --yes skips (for scripts).`,
@@ -1732,8 +2127,9 @@ path). A full dump needs a fresh schema — data-only into a migrated schema is
 the clean path (automate with restore.pre / restore.post hooks).`,
   "pg-upgrade":
     `supa pg-upgrade <project> --to <major_version> [--yes] [--dry-run] [--allow-downgrade]
-Postgres MAJOR upgrade: data snapshot -> stop -> bump major_version ->
-drop the DB volume -> start fresh -> restore. Destructive (typed confirm).
+Postgres MAJOR upgrade: snapshot -> stop -> copy the DB volume aside ->
+bump major_version -> remove the old name -> start fresh -> restore.
+The copy is deleted only after restore succeeds. Destructive (typed confirm).
 Downgrades are refused by default (Postgres does not support them — roll back
 via the pre-upgrade snapshot instead); --allow-downgrade overrides. --dry-run
 previews.`,
@@ -1742,28 +2138,30 @@ Update supa ITSELF from GitHub Releases (checksum-verified, atomic swap).
 --check only reports the latest version. supa never phones home on its own —
 this command is the only network call, and only when you run it.
 (Postgres major upgrades: supa pg-upgrade.)`,
-  env: `supa env <project> [--write [file]]
+  env: `supa env <project> [--json] [--write [file]]
 Print the stack's keys/URLs, or --write: merge them into a dotenv file
 (default <config-dir>/.env.local) — updates keys in place, keeps other
-lines. Add a supa.env.map in the project workdir (beside supabase/) to rename keys.`,
-  add: `supa add <name> <path> [--init] [--slot 0-9]
+lines. Without a supa.env.map, --write renames both the legacy JWT keys and
+the publishable/secret keys. A project file replaces that default.`,
+  add: `supa add <name> <path> [--init] [--slot 0-111]
 Register a project (path is stored absolute). --init runs 'supabase init' when
-needed and assigns a free 543XX band (or --slot). If a config.toml already
-exists, init is skipped and ports are kept unless --slot is passed (then
-re-banded). For a directory of projects, see: supa help park`,
+needed. Stock config.toml ports are left as committed defaults; supa remembers
+a free slot under .supa/ports and passes it to the CLI as environment variables.
+A config that already changed a host port inside 54300-54399 keeps that file.
+For a directory of projects, see: supa help park`,
   park: `supa park [<dir>] · supa unpark <dir>
 Opt-in auto-discovery: parking a dir makes every immediate subdir that
 contains supabase/config.toml appear as a project (named after the subdir).
 Subdirs without Supabase are ignored; explicit 'supa add' entries win.
 'supa park' alone lists parked dirs. Stored as a '*|<dir>' registry line.`,
-  ports: `supa ports <name> [slot 0-9] [--force]
-Re-band the project's 543XX ports to a new slot (4th digit), keeping the
-service digit. Writes config.toml.bak first. Refuses a slot already used by
-another project or held by a foreign container unless --force. Apply with:
+  ports: `supa ports <name> [slot 0-111]
+Move an auto-assigned slot (54421 + slot*100). Does not rewrite config.toml.
+Refuses when the file already has a committed port band. Apply with:
 supa restart`,
-  logs: `supa logs <project> [service] [-f]
-Tail one service's container logs (200 lines; -f follows). Without a
-service, lists the stack's services.`,
+  logs: `supa logs <project> [service] [--since <time>] [-f]
+Show one service's container logs (last 200 lines). --since is passed to
+docker logs. Stopped containers are included. -f follows only while the
+container is running. Without a service, lists the stack's services.`,
   limit: `supa limit <project>
 Apply the project's supa.limits (memory/cpus caps per container) to the
 running stack now. Happens automatically on 'supa up'.`,
@@ -1786,6 +2184,78 @@ Print a tab-completion script (verbs + project names). Install:
   pwsh:  supa completion pwsh | Out-String | Invoke-Expression   ($PROFILE)`,
 };
 
+export async function cmdStudio(rest: string[]): Promise<void> {
+  if (rest.length !== 1) die("usage: supa studio <project>");
+  const p = rest[0];
+  requireProject(p);
+  requireCfg(p);
+  const lbl = labelOf(p);
+  if (!lbl || !(await runningLabels()).includes(lbl)) {
+    die(`'${p}' is not running — start it first: supa up ${p}`);
+  }
+  const port = shownPort(p, "studio");
+  if (!port) die(`no Studio port for '${p}'`);
+  const url = `http://127.0.0.1:${port}`;
+  console.log(url);
+  const code = OS === "windows"
+    ? await runInherit("cmd", ["/c", "start", "", url])
+    : OS === "darwin"
+    ? await runInherit("open", [url])
+    : await runInherit("xdg-open", [url]);
+  if (code !== 0) die(`could not open ${url}`);
+}
+
+export async function cmdMcp(): Promise<void> {
+  const pending = { text: "" };
+  const dec = new TextDecoder();
+  const buf = new Uint8Array(1024 * 1024);
+  const main = fromFileUrl(new URL("../main.ts", import.meta.url));
+  const run = async (args: string[]) => {
+    const self = Deno.execPath();
+    const compiled = !/(^|[\\/])deno(\.exe)?$/i.test(self);
+    const cmdArgs = compiled ? args : ["run", "--no-check", "-A", main, ...args];
+    try {
+      const { code, stdout, stderr } = await new Deno.Command(self, {
+        args: cmdArgs,
+        stdout: "piped",
+        stderr: "piped",
+      }).output();
+      return {
+        code,
+        out: new TextDecoder().decode(stdout),
+        err: new TextDecoder().decode(stderr),
+      };
+    } catch (e) {
+      return { code: 127, out: "", err: e instanceof Error ? e.message : String(e) };
+    }
+  };
+  while (true) {
+    const n = await Deno.stdin.read(buf);
+    if (n === null) break;
+    pending.text += dec.decode(buf.subarray(0, n));
+    let nl = pending.text.indexOf("\n");
+    while (nl >= 0) {
+      const line = pending.text.slice(0, nl).trim();
+      pending.text = pending.text.slice(nl + 1);
+      nl = pending.text.indexOf("\n");
+      if (!line) continue;
+      let msg: McpMessage;
+      try {
+        msg = JSON.parse(line) as McpMessage;
+      } catch {
+        console.log(JSON.stringify({
+          jsonrpc: "2.0",
+          id: null,
+          error: { code: -32700, message: "parse error" },
+        }));
+        continue;
+      }
+      const reply = await handleMcpMessage(msg, run);
+      if (reply) console.log(JSON.stringify(reply));
+    }
+  }
+}
+
 export function cmdHelp(rest: string[] = []): void {
   const topic = rest[0];
   if (topic) {
@@ -1804,7 +2274,7 @@ export function cmdHelp(rest: string[] = []): void {
     `supa — run local Supabase stacks (CLI-backed, cross-platform, no compose)
 
   supa ls [--json]              list projects, docker label, live ports, status
-  supa up <p...>                start stack(s) — refuses past the max-active limit *
+  supa up <p...> [--exclude <containers>]   start stack(s) — refuses past the max-active limit *
   supa down <p...> | --all      stop one/more stacks (or every registered one)
   supa restart <p...>           stop + start a stack
   supa switch <p>               stop all others, run only <p>
@@ -1815,14 +2285,16 @@ export function cmdHelp(rest: string[] = []): void {
   supa pg-upgrade <p> --to <ver> [--dry-run]   Postgres major upgrade (snapshot+restore)
   supa upgrade [--check]        update supa itself (from GitHub Releases)
   supa status [--json]          raw docker view, grouped by project
-  supa stats                    CPU/MEM per container + per-stack & total RAM
+  supa stats [--json]           CPU/MEM per container + per-stack & total RAM
   supa limit <p>                apply supa.limits (memory/cpus caps) to a running stack
-  supa logs <p> [svc] [-f]      tail a stack's container logs
-  supa env <p> [--write [f]]    print keys/URLs, or merge them into a .env file
-  supa add <name> <path> [--init] [--slot N]   register (--init: init + assign ports)
+  supa logs <p> [svc] [--since t] [-f]   container logs, including stopped stacks
+  supa studio <p>               open that project's Studio in the browser
+  supa env <p> [--json] [--write [f]]   print keys/URLs, or merge them into a .env file
+  supa add <name> <path> [--init] [--slot N]   register (--init: init + assign a slot)
   supa rm <name>                unregister a project
   supa park [<dir>] · unpark <dir>   auto-discover supabase projects in a dir (opt-in)
-  supa ports <name> [slot] [--force]   re-band 543XX ports (auto-picks a free slot)
+  supa ports <name> [slot]      move an auto slot (does not rewrite config.toml)
+  supa mcp                      local stdio MCP server for an editor to launch
   supa doctor                   preflight: docker, CLI, registry, ports, config
   supa prune [--images] [--dry-run]   reclaim docker disk (Supabase images only)
   supa config [--json] [max-active <n> | ram-budget <gb> | backup-dir <path>]   show/set

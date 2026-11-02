@@ -1,7 +1,25 @@
 // Talking to the outside world: resolve the Supabase CLI, run docker/supabase
 // (never through a shell), and the start/stop/max-active lifecycle.
-import { die, escapeRegExp, home, isFile, join, OS } from "./util.ts";
-import { cfgDir, labelOf, names, readHooks, readLimits, readMaxActive, rootOf } from "./config.ts";
+import { CommandFailed, die, escapeRegExp, home, isFile, join, OS, readTextFile } from "./util.ts";
+import {
+  cfgDir,
+  cfgFile,
+  labelOf,
+  names,
+  portOverlay,
+  readHooks,
+  readLimits,
+  readMaxActive,
+  readSavedSlot,
+  rootOf,
+} from "./config.ts";
+import {
+  apiPortMismatch,
+  effectivePorts,
+  parsePublishedPorts,
+  portMode,
+  readHostPorts,
+} from "./ports.ts";
 import { exceedsMaxActive, foreignSlotHolders, uniqueNames } from "./parse.ts";
 
 export const SUPABASE_MISSING =
@@ -36,13 +54,22 @@ export function supabaseCmd(): string {
 // Run a command, capturing stdout + stderr (stderr is for failure messages —
 // callers that die() should include it so the real cause isn't swallowed).
 // 127 == spawn failure.
+function childEnv(extra?: Record<string, string>): Record<string, string> | undefined {
+  if (!extra || Object.keys(extra).length === 0) return undefined;
+  const env: Record<string, string> = {};
+  for (const [k, v] of Object.entries(Deno.env.toObject())) env[k] = v;
+  for (const [k, v] of Object.entries(extra)) env[k] = v;
+  return env;
+}
 export async function runCapture(
   cmd: string,
   args: string[],
+  extraEnv?: Record<string, string>,
 ): Promise<{ code: number; out: string; err: string }> {
   try {
     const { code, stdout, stderr } = await new Deno.Command(cmd, {
       args,
+      env: childEnv(extraEnv),
       stdout: "piped",
       stderr: "piped",
     }).output();
@@ -56,10 +83,15 @@ export async function runCapture(
   }
 }
 // Run a command with inherited stdio (interactive). 127 == spawn failure.
-export async function runInherit(cmd: string, args: string[]): Promise<number> {
+export async function runInherit(
+  cmd: string,
+  args: string[],
+  extraEnv?: Record<string, string>,
+): Promise<number> {
   try {
     const { code } = await new Deno.Command(cmd, {
       args,
+      env: childEnv(extraEnv),
       stdout: "inherit",
       stderr: "inherit",
       stdin: "inherit",
@@ -239,10 +271,11 @@ export async function runHook(
 
 export async function startStack(
   name: string,
-  opts?: { failHint?: string; failHintAfterStart?: string },
+  opts?: { failHint?: string; failHintAfterStart?: string; exclude?: string; json?: boolean },
 ): Promise<void> {
   const wd = cfgDir(name);
   if (!wd) die(`no supabase/config.toml under '${rootOf(name)}' for '${name}'`);
+  const say = opts?.json ? console.error : console.log;
   const preHint = opts?.failHint ? { failHint: opts.failHint } : undefined;
   const postHint = opts?.failHintAfterStart
     ? { failHint: opts.failHintAfterStart, soft: true as const }
@@ -250,20 +283,41 @@ export async function startStack(
   // Soft-fail postHint even when no custom hint — stack is already up.
   const hooks = readHooks(wd);
   if (hooks.upPre) await runHook("up.pre", hooks.upPre, wd, preHint);
-  console.log(`>> starting ${name}  (${wd})`);
-  const code = await runInherit(supabaseCmd(), ["--workdir", wd, "start"]);
+  say(`>> starting ${name}  (${wd})`);
+  const startArgs = ["--workdir", wd, "start"];
+  // After the subcommand: `--exclude` is not a global flag.
+  if (opts?.exclude) startArgs.push("--exclude", opts.exclude);
+  const overlay = portOverlay(name);
+  const code = await runInherit(supabaseCmd(), startArgs, overlay);
   if (code === 127) {
     const hint = opts?.failHint ? `\n${opts.failHint}` : "";
     die(SUPABASE_MISSING + hint);
   }
   if (code !== 0) {
     const hint = opts?.failHint ? `\n${opts.failHint}` : "";
-    die(`supabase start failed for '${name}' (exit ${code})${hint}`);
+    throw new CommandFailed(`supabase start failed for '${name}' (exit ${code})${hint}`);
   }
   const lbl = labelOf(name);
+  const f = cfgFile(name);
+  if (lbl && f && isFile(f)) {
+    const found = readHostPorts(readTextFile(f));
+    const slot = readSavedSlot(wd);
+    if (portMode(found) === "auto" && typeof slot === "number") {
+      const ps = await runCapture("docker", [
+        "ps",
+        "--filter",
+        `label=com.supabase.cli.project=${lbl}`,
+        "--format",
+        '{{.Names}}\t{{.Ports}}\t{{.Label "com.supabase.cli.project"}}',
+      ]);
+      const expected = effectivePorts(found, slot).api;
+      const mismatch = apiPortMismatch(parsePublishedPorts(ps.out), lbl, expected);
+      if (mismatch) throw new CommandFailed(mismatch);
+    }
+  }
   if (lbl) await pinNoRestart(lbl);
   const n = await applyLimits(name);
-  if (n) console.log(`  applied resource limits to ${n} container(s)  (supa.limits)`);
+  if (n) say(`  applied resource limits to ${n} container(s)  (supa.limits)`);
   if (hooks.upPost) await runHook("up.post", hooks.upPost, wd, postHint);
 }
 export async function stopStack(name: string): Promise<void> {
@@ -277,9 +331,9 @@ export async function stopStack(name: string): Promise<void> {
   const isUp = lbl !== null && (await runningLabels()).includes(lbl);
   if (isUp && hooks.downPre) await runHook("down.pre", hooks.downPre, wd);
   console.log(`== stopping ${name}`);
-  const code = await runInherit(supabaseCmd(), ["--workdir", wd, "stop"]);
+  const code = await runInherit(supabaseCmd(), ["--workdir", wd, "stop"], portOverlay(name));
   if (code === 127) die(SUPABASE_MISSING);
-  if (code !== 0) die(`supabase stop failed for '${name}' (exit ${code})`);
+  if (code !== 0) throw new CommandFailed(`supabase stop failed for '${name}' (exit ${code})`);
   // Soft-fail: stop already succeeded — same rationale as up.post.
   if (isUp && hooks.downPost) await runHook("down.post", hooks.downPost, wd, { soft: true });
 }
@@ -336,4 +390,68 @@ export async function guardMany(toStart: string[]): Promise<void> {
     needStart[0],
     running.length + needStart.length,
   );
+}
+
+export async function volumeExists(name: string): Promise<boolean> {
+  const r = await runCapture("docker", ["volume", "inspect", name]);
+  if (r.code === 0) return true;
+  if (/no such volume/i.test(r.err) || /no such volume/i.test(r.out)) return false;
+  if (r.code === 127) throw new CommandFailed("docker not available");
+  throw new CommandFailed(r.err.trim() || `docker volume inspect ${name} failed`);
+}
+
+export async function dbImage(container: string): Promise<string> {
+  const r = await runCapture("docker", ["inspect", "--format", "{{.Config.Image}}", container]);
+  if (r.code !== 0 || r.out.trim() === "") {
+    throw new CommandFailed(
+      `cannot read the image of ${container} — is the stack stopped but the container still there?`,
+    );
+  }
+  return r.out.trim();
+}
+
+/** Copy a stopped DB volume. Does not delete `from`. */
+export async function copyDbVolume(opts: {
+  image: string;
+  from: string;
+  to: string;
+}): Promise<void> {
+  const created = await runCapture("docker", ["volume", "create", opts.to]);
+  if (created.code !== 0) {
+    throw new CommandFailed(created.err.trim() || `could not create volume ${opts.to}`);
+  }
+  const copy = await runCapture("docker", [
+    "run",
+    "--rm",
+    "--entrypoint",
+    "/bin/cp",
+    "-v",
+    `${opts.from}:/from:ro`,
+    "-v",
+    `${opts.to}:/to`,
+    opts.image,
+    "-a",
+    "/from/.",
+    "/to/",
+  ]);
+  if (copy.code !== 0) {
+    await runCapture("docker", ["volume", "rm", opts.to]);
+    throw new CommandFailed(copy.err.trim() || `could not copy ${opts.from} to ${opts.to}`);
+  }
+  const check = await runCapture("docker", [
+    "run",
+    "--rm",
+    "--entrypoint",
+    "/bin/cat",
+    "-v",
+    `${opts.to}:/data:ro`,
+    opts.image,
+    "/data/PG_VERSION",
+  ]);
+  if (check.code !== 0 || check.out.trim() === "") {
+    await runCapture("docker", ["volume", "rm", opts.to]);
+    throw new CommandFailed(
+      `copy of ${opts.from} has no PG_VERSION — left the original volume in place`,
+    );
+  }
 }

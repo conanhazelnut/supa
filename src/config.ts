@@ -16,6 +16,7 @@ import {
 import {
   type Hooks,
   type Limits,
+  mergeDotenv,
   parseEnvMap,
   parseHooks,
   parseLabel,
@@ -26,6 +27,14 @@ import {
   rebandText,
   SAFE_NAME,
 } from "./parse.ts";
+import {
+  effectivePorts,
+  envForPorts,
+  parseSlotText,
+  portMode,
+  readHostPorts,
+  slotFileText,
+} from "./ports.ts";
 
 export type { Hooks, Limits, Project };
 
@@ -273,6 +282,44 @@ export function readHooks(cfgDirPath: string): Hooks {
 export function readLimits(cfgDirPath: string): Limits {
   const p = join(cfgDirPath, "supa.limits");
   return isFile(p) ? parseLimits(readTextFile(p)) : {};
+}
+export function slotPath(wd: string): string {
+  return join(wd, ".supa", "ports");
+}
+export function readSavedSlot(wd: string): number | "missing" | "invalid" {
+  const p = slotPath(wd);
+  if (!isFile(p)) return "missing";
+  return parseSlotText(readTextFile(p));
+}
+export function writeSavedSlot(wd: string, slot: number): void {
+  const p = slotPath(wd);
+  try {
+    Deno.mkdirSync(parentDir(p), { recursive: true });
+  } catch { /* exists */ }
+  Deno.writeTextFileSync(p, slotFileText(slot));
+}
+/** Env that makes `supabase` use the remembered slot. Empty when the file owns the ports. */
+export function portOverlay(name: string): Record<string, string> {
+  const wd = cfgDir(name);
+  const f = cfgFile(name);
+  if (!wd || !f || !isFile(f)) return {};
+  const found = readHostPorts(readTextFile(f));
+  if (portMode(found) !== "auto") return {};
+  const slot = readSavedSlot(wd);
+  if (typeof slot !== "number") return {};
+  return envForPorts(effectivePorts(found, slot), found);
+}
+/** Keep `supabase/.env.local` on the same ports a hand-run CLI will see. Other keys stay. */
+export function syncPortEnvFile(wd: string, env: Record<string, string>): void {
+  if (Object.keys(env).length === 0) return;
+  const path = join(wd, "supabase", ".env.local");
+  const incoming = Object.entries(env).map(([k, v]) => `${k}=${v}`).join("\n");
+  const existing = isFile(path) ? readTextFile(path) : "";
+  const { text } = mergeDotenv(existing, incoming);
+  try {
+    Deno.mkdirSync(parentDir(path), { recursive: true });
+  } catch { /* exists */ }
+  Deno.writeTextFileSync(path, text, { mode: 0o600 });
 }
 export function rebandConfig(f: string, slot: string): string[] {
   const src = readTextFile(f);

@@ -25,6 +25,7 @@ import {
   cmdLimit,
   cmdLogs,
   cmdLs,
+  cmdMcp,
   cmdNames,
   cmdPark,
   cmdPorts,
@@ -36,6 +37,7 @@ import {
   cmdSelfUpdate,
   cmdStats,
   cmdStatus,
+  cmdStudio,
   cmdSwitch,
   cmdUnpark,
   cmdUp,
@@ -93,13 +95,19 @@ async function main(): Promise<void> {
       await cmdStatus(rest);
       break;
     case "stats":
-      await cmdStats();
+      await cmdStats(rest);
       break;
     case "limit":
       await cmdLimit(rest);
       break;
     case "logs":
       await cmdLogs(rest);
+      break;
+    case "studio":
+      await cmdStudio(rest);
+      break;
+    case "mcp":
+      await cmdMcp();
       break;
     case "env":
       await cmdEnv(rest);
@@ -127,7 +135,7 @@ async function main(): Promise<void> {
       cmdNames();
       break;
     case "doctor":
-      await cmdDoctor();
+      await cmdDoctor(rest);
       break;
     case "prune":
       await cmdPrune(rest);

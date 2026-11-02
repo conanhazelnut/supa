@@ -158,6 +158,14 @@ export function mergeDotenv(
   return { text: outLines.join("\n") + "\n", keys, map };
 }
 
+// Used when a project has no supa.env.map. Missing CLI names warn; they are not invented.
+export const DEFAULT_ENV_MAP: Array<{ app: string; native: string }> = [
+  { app: "SUPABASE_ANON_KEY", native: "ANON_KEY" },
+  { app: "SUPABASE_SERVICE_ROLE_KEY", native: "SERVICE_ROLE_KEY" },
+  { app: "SUPABASE_PUBLISHABLE_KEY", native: "PUBLISHABLE_KEY" },
+  { app: "SUPABASE_SECRET_KEY", native: "SECRET_KEY" },
+];
+
 // Parse a per-project rename map ("APP_NAME = NATIVE" per line, # comments ok).
 export function parseEnvMap(text: string): Array<{ app: string; native: string }> {
   const out: Array<{ app: string; native: string }> = [];
